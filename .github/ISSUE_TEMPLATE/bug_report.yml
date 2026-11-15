@@ -1,0 +1,100 @@
+name: Bug Report
+description: Report an issue, test anomaly, or harness error in RecoveryBench
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Thank you for reporting an issue!
+        > **Security & Privacy Notice:** NEVER paste API keys, secret tokens, private credentials, or proprietary production payloads into GitHub issues. RecoveryBench redacts known secrets from logs, but always verify your logs before submitting.
+
+  - type: input
+    id: version
+    attributes:
+      label: RecoveryBench Version
+      description: Run `recoverybench --help` or check `pip show recoverybench`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: Run `python --version`
+      placeholder: "3.11.8 / 3.12.3 / 3.13.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: Select your host operating system
+      options:
+        - "Ubuntu / Debian Linux"
+        - "Fedora / RHEL / Arch Linux"
+        - "macOS (Apple Silicon)"
+        - "macOS (Intel)"
+        - "Windows 11 / 10 (PowerShell)"
+        - "Windows 11 / 10 (WSL2)"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: isolation-mode
+    attributes:
+      label: Execution Isolation Mode
+      description: Which execution mode was used?
+      options:
+        - "isolated (Docker container with --network=none)"
+        - "trusted (in-process Python execution)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: scenario-info
+    attributes:
+      label: Scenario & Agent Configuration
+      description: Which scenario (built-in YAML or custom) and agent adapter (Generic Callable, LangGraph, custom) were you running?
+      placeholder: "e.g. scenarios/payment_timeout_after_commit.yaml with custom LangGraph agent"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: Exact CLI commands or Python code used to reproduce the issue
+      placeholder: |
+        1. recoverybench run scenarios/my_scenario.yaml --agent my_agent --isolation isolated
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized Output & Traceback
+      description: Paste relevant terminal output or tracebacks. Ensure all proprietary URLs or secrets are removed!
+      render: shell
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Sanity Checks
+      options:
+        - label: "I have confirmed that no secrets, API keys, or private tokens are present in this issue."
+          required: true
+        - label: "I have checked existing GitHub issues to ensure this is not a duplicate."
+          required: true

@@ -1,0 +1,40 @@
+name: Feature Request
+description: Propose a new capability, fault injection mode, or invariant evaluation rule
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Feature Request for RecoveryBench
+        Propose enhancements to fault injection, ledger capabilities, recovery evaluator rules, or reporting formats.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem or blindspot?
+      description: A clear and concise description of the limitation you encountered.
+      placeholder: "e.g. When testing webhook retries, I need to simulate payload corruptions with specific JSON schema drift..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution or Behavior
+      description: Describe what you would like RecoveryBench to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions Considered
+      description: Any workarounds or alternative designs you have evaluated.
+
+  - type: checkboxes
+    id: community
+    attributes:
+      label: Contribution
+      options:
+        - label: "I would be interested in contributing or testing a pull request for this feature."

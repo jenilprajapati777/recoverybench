@@ -1,8 +1,29 @@
 # RecoveryBench
 
-> **"Test the failure before production does."**
+### Your AI agent timed out. Did it perform the operation twice?
 
-RecoveryBench is a local-first, deterministic AI Agent Recovery Testing Platform. It evaluates whether autonomous AI agents recover safely from failures involving external tool calls and side effects.
+**Reproduce tool failures, inspect committed effects, and test safe agent recovery locally and in CI.**
+
+[![CI](https://github.com/jenilprajapati777/recoverybench/actions/workflows/recoverybench-ci.yml/badge.svg)](https://github.com/jenilprajapati777/recoverybench/actions)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+
+[**Run the Double-Charge Demo**](#3-run-the-out-of-the-box-demo) • [**First-User Guide**](docs/FIRST_USER_GUIDE.md) • [**Demo Walkthrough**](docs/DEMO_WALKTHROUGH.md) • [**SDK Guide**](docs/SDK_INTEGRATION_GUIDE.md) • [**Architecture**](docs/ARCHITECTURE.md) • [**Security Model**](docs/SECURITY_MODEL.md) • [**GitHub Issues**](https://github.com/jenilprajapati777/recoverybench/issues)
+
+---
+
+## What is RecoveryBench?
+
+RecoveryBench is a local-first testing platform for autonomous AI agents that perform real-world side effects (charging credit cards, reserving resources, updating external databases, dispatching webhooks).
+
+When an external tool call experiences a network timeout or dropped response after the server commits a mutation (the classic Two Generals' Hazard), naive agent retry loops frequently cause duplicate side effects—such as double-charging a customer.
+
+RecoveryBench injects deterministic distributed systems faults into agent tool workflows, tracks every mutation attempt in an append-only effect ledger, and verifies whether your agent recovers safely without creating duplicate, missing, or orphaned side effects.
+
+### Supported Framework Integrations
+- **Generic Python Callables:** Test arbitrary functions, methods, or classes using `@agent` or `wrap_agent()`.
+- **LangGraph Adapter:** Native integration bridging LangGraph `StateGraph` workflows and `ToolNode` instances.
+- *(Roadmap):* Dedicated adapters for CrewAI, AutoGen, and Model Context Protocol (MCP) tool servers.
 
 ---
 
@@ -106,6 +127,8 @@ RecoveryBench provides **deterministic fault injection**, an **append-only effec
 
 ## Quickstart
 
+> Looking for a step-by-step walkthrough? Read the [**First-User Getting Started Guide**](docs/FIRST_USER_GUIDE.md).
+
 ### 1. Installation
 
 ```bash
@@ -113,10 +136,10 @@ RecoveryBench provides **deterministic fault injection**, an **append-only effec
 git clone https://github.com/jenilprajapati777/recoverybench.git
 cd recoverybench
 
-# Create virtual environment and install
+# Create virtual environment and install in editable mode
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -e .
+source .venv/bin/activate  # On Windows: .venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
 ```
 
 ### 2. Verify Your Environment
@@ -125,13 +148,7 @@ pip install -e .
 recoverybench doctor
 ```
 
-Output:
-```
-[PASS] Python Version: 3.13.8 (>= 3.11 required)
-[PASS] SQLite Ledger Support: Available
-[PASS] Output Directory: D:\RecoveryBench\.recoverybench (Writable)
-Environment check completed: System ready for RecoveryBench testing.
-```
+Confirms Python version, SQLite engine, scenario registry, and Docker availability.
 
 ### 3. Run the Out-of-the-Box Demo
 
@@ -141,11 +158,46 @@ Run the comparative demonstration pitting an unsafe naive retry agent against a 
 recoverybench demo
 ```
 
-The CLI outputs:
-1. **Unsafe Naive Agent Run:** Fails with `GENUINE_FAILURE` — commits 2 charges (1 duplicate double-charge) because it generated a new key on retry.
-2. **Safe Idempotent Agent Run:** Passes with `PASS` — commits exactly 1 charge because it preserved a stable idempotency key across retries.
-3. **Ground-Truth Comparison Table:** Highlights the real-world business and financial impact.
-4. **Saved Reports:** JSON, HTML, and JUnit XML files generated in `.recoverybench/reports/`.
+#### What Happens in the Demo:
+- **Unsafe Naive Agent:** Generates a new idempotency key on retry. Fails with `GENUINE_FAILURE` because it commits **2 charges** (double charge hazard).
+- **Safe Idempotent Agent:** Preserves a stable idempotency key across retries. Passes with `PASS` because the payment mock recognizes the retry and commits **exactly 1 charge**.
+
+```text
+                 Comparative Summary & Ground-Truth Invariants                 
+╔═════════════════════════╤═════════════════════════╤═════════════════════════╗
+║ Metric / Invariant      │  Naive Agent (Unsafe)   │ Idempotent Agent (Safe) ║
+╟─────────────────────────┼─────────────────────────┼─────────────────────────╢
+║ Final Verdict           │     GENUINE_FAILURE     │          PASS           ║
+║ Expected Side Effects   │            1            │            1            ║
+║ Actual Committed        │            2            │            1            ║
+║ Effects                 │                         │                         ║
+║ Duplicate Side Effects  │   1 (DOUBLE CHARGE!)    │        0 (None)         ║
+║ Idempotency Key Stable? │  No (New key / None on  │     Yes (Preserved      ║
+║                         │         retry)          │     identical key)      ║
+║ Real-World Impact       │ Customer charged twice  │ Customer charged once;  ║
+║                         │     on network drop     │  recovery transparent   ║
+╚═════════════════════════╧═════════════════════════╧═════════════════════════╝
+```
+
+Detailed JSON, HTML, and JUnit XML reports are written to `.recoverybench/reports/`. See [DEMO_WALKTHROUGH.md](docs/DEMO_WALKTHROUGH.md) for a step-by-step breakdown.
+
+---
+
+## The Code Difference: Naive vs. Safe Agent
+
+```python
+# Unsafe Naive Agent (src/recoverybench/agent/naive.py)
+# On retry, generates a brand-new random key or omits the key:
+flawed_key = f"key_{uuid.uuid4().hex[:8]}"
+tool_call("payment_gateway", "charge", task.task_params, flawed_key)
+# Result: Gateway treats retry as a second independent transaction -> DOUBLE CHARGE!
+
+# Safe Idempotent Agent (src/recoverybench/agent/idempotent.py)
+# Derives a deterministic, stable key across all retries of this transaction:
+stable_key = f"idem_{hashlib.sha256(serialized_task).hexdigest()[:16]}"
+tool_call("payment_gateway", "charge", task.task_params, stable_key)
+# Result: Gateway recognizes retry, returns original receipt -> EXACTLY 1 CHARGE!
+```
 
 ---
 
@@ -381,6 +433,8 @@ ruff check .
 # Run mypy strict type checker
 mypy src
 ```
+
+Found a bug or need a framework integration? Please open an issue via [GitHub Issues](https://github.com/jenilprajapati777/recoverybench/issues).
 
 ---
 

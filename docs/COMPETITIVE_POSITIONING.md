@@ -1,58 +1,100 @@
-# RecoveryBench - Competitive Positioning & Market Differentiation
+# RecoveryBench — Competitive Positioning & Product Landscape
 
-**Category:** Local-First AI Agent Recovery & Side-Effect Testing Platform  
-**Positioning Statement:** *RecoveryBench is the first testing tool specifically built to verify how autonomous AI agents recover from external tool faults without causing duplicate or orphaned side-effects.*
-
----
-
-## 1. The Market Gap
-
-The AI tooling landscape is densely populated in observability, prompting benchmarks, and runtime traces. However, there is a glaring blindspot: **testing the failure recovery behavior of side-effectful agents before they deploy to production.**
-
-```
-+----------------------------------------------------------------------------------+
-|                            THE AGENT TOOLING SPECTRUM                            |
-|                                                                                  |
-|  [ LLM Observability ]       [ LLM Benchmark Evals ]      [ RecoveryBench ]      |
-|  - LangSmith                 - DeepEval                   - Deterministic Faults |
-|  - Langfuse                  - Ragas                      - Ground-Truth Ledger  |
-|  - Arize Phoenix             - Promptfoo                  - Side-Effect Invariants|
-|  Passive monitoring          Prompt / Content scoring     Active recovery testing|
-|  "What happened in prod?"    "Is the summary accurate?"   "Did it double-charge?" |
-+----------------------------------------------------------------------------------+
-```
+**Category:** AI Agent Recovery Testing  
+**Tagline:** *Test the failure before production does.*  
+**Core Description:** RecoveryBench injects deterministic failures into agent tool workflows and checks whether the agent recovers without creating duplicate, missing or incorrectly reported side effects.  
 
 ---
 
-## 2. Detailed Differentiation Matrix
+## 1. Product Positioning
 
-| Capability | Generic LLM Tracers (LangSmith, Langfuse) | Prompt / RAG Evals (DeepEval, Ragas) | Chaos Tools (Gremlin, Toxiproxy) | **RecoveryBench** |
+RecoveryBench is an integration-oriented recovery-testing tool designed for developers to test their own autonomous AI agents under deterministic distributed systems faults. It bridges the gap between pre-deployment unit/integration testing and runtime side-effect verification.
+
+### Target Audience
+- **Python AI Agent Developers:** Authoring agent loops and resilient tool execution logic.
+- **LangGraph Developers:** Building directed acyclic or cyclic agent workflows with `StateGraph` and `ToolNode`.
+- **Backend & Platform Engineers:** Responsible for financial, provisioning, and transactional side-effects triggered by autonomous agents.
+- **QA & Reliability Engineers:** Establishing automated CI/CD safety gates to verify invariant compliance prior to production release.
+
+### Initial Use Case
+Payment and transaction workflows where a transient failure or timeout after commit (`timeout_after_commit`, the Two Generals' Hazard) can trigger blind retries, resulting in duplicate billing or orphaned mutations.
+
+### What RecoveryBench Is NOT
+- **Not a general-purpose LLM observability platform:** It does not replace tools like LangSmith or Langfuse for production tracing, token tracking, or cost telemetry.
+- **Not an LLM benchmark for reasoning quality:** It does not benchmark MMLU, GSM8k, or general knowledge accuracy.
+- **Not a general infrastructure chaos engineering platform:** It is not an OS-level or cluster-wide chaos orchestrator like Gremlin or Toxiproxy.
+
+---
+
+## 2. Product Landscape & Adjacent Solutions
+
+Autonomous agents interact with real-world APIs, but existing tooling addresses different stages of the application lifecycle. RecoveryBench focuses specifically on **active, pre-deployment recovery verification against ground-truth side effects**.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                               AI AGENT TOOLING SPECTRUM                                │
+│                                                                                        │
+│   [ Production Observability ]       [ Quality & Content Evals ]     [ RecoveryBench ] │
+│   - LangSmith                        - DeepEval                      - Active Faults   │
+│   - Langfuse                         - Ragas                         - Effect Ledger   │
+│   - Arize Phoenix                    - Promptfoo                     - Invariant Rules │
+│   Passive production traces          Model output scoring            Recovery testing  │
+│   "What happened in prod?"           "Was the answer accurate?"      "Did it charge 2x?"│
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Adjacent Tool Categories
+
+1. **LLM Observability & Tracing (LangSmith, Langfuse, Arize Phoenix)**
+   - *Role:* Instrument production workflows, record distributed traces, capture input/output spans, and monitor latency/tokens.
+   - *Distinction:* Observability records what an agent executed in production or during test runs. However, observability tools do not inject deterministic application faults (such as a TCP drop *after* an upstream commit) into mock tool dependencies, nor do they assert ground-truth database mutations or idempotency key stability. RecoveryBench complements observability by certifying agent recovery logic *before* deployment.
+
+2. **Infrastructure Chaos & Network Fault Simulation (Gremlin, Toxiproxy)**
+   - *Role:* Inject latency, jitter, packet loss, or server shutdowns into networks and container clusters.
+   - *Distinction:* Network chaos tools operate at the transport layer (L4/L7) across live infrastructure. While Toxiproxy can drop TCP sockets, it does not understand agent tool boundaries, logical transaction identity (`operation_id` vs `attempt_id`), or application-level commit semantics. RecoveryBench operates at the application/agent integration boundary, pairing stateful mock tool state with deterministic fault injection.
+
+3. **Academic Retry Benchmarking (RetryBench)**
+   - *Role:* Evaluates LLM prompting strategies and retry resilience across academic benchmark suites.
+   - *Distinction:* RetryBench focuses on academic benchmarking of LLM behaviors under prompt retries. RecoveryBench is an engineering tool designed for developers to test their own production code, integrating with Python callables and LangGraph workflows, backed by an append-only effect ledger and hardened Linux container isolation.
+
+---
+
+## 3. Comparison Matrix
+
+| Dimension | LLM Observability (LangSmith, Langfuse, Phoenix) | Infrastructure Chaos (Gremlin, Toxiproxy) | Academic Benchmarks (RetryBench) | **RecoveryBench** |
 | :--- | :--- | :--- | :--- | :--- |
-| **Primary Focus** | Passive telemetry & token metrics | Semantic quality & hallucinations | Network packet drops on infrastructure | **Deterministic agent tool failure & side effects** |
-| **Testing Paradigm** | Post-hoc analysis in production | Prompt-response matching | Uncontrolled infrastructure stress | **Deterministic pre-deployment unit/integration tests** |
-| **Side-Effect Verification** | None (only logs what agent sent) | None (evaluates text output) | None (only verifies service uptime) | **Ground-Truth Effect Ledger (commits, duplicates)** |
-| **Two Generals' Problem Testing** | Impossible | Impossible | Unreliable / probabilistic | **Native (`timeout_after_commit` deterministic injector)** |
-| **Virtual Time Execution** | No (real wall-clock delays) | No | No | **Yes (zero-sleep deterministic virtual clock)** |
-| **Offline / Local Execution** | Usually requires cloud service | Local or API-dependent | Infrastructure required | **100% Local-first (SQLite, zero API keys required)** |
-| **Idempotency Assertions** | No | No | No | **Native key-stability & duplicate commit detection** |
+| **Primary Focus** | Passive telemetry, trace visualization, token analytics | Infrastructure resilience, packet drops, latency injection | Evaluating LLM prompting strategies under retries | **Deterministic agent recovery & business side-effect verification** |
+| **Testing Stage** | Continuous monitoring / staging analysis | Staging & production chaos experiments | Research evaluation & prompt comparison | **Pre-deployment unit, integration, and CI/CD testing** |
+| **Fault Injection** | Not designed for active fault injection | Injects network/server faults at the OS/socket layer | Evaluates prompt-level retries | **Application-level tool faults (e.g. `timeout_after_commit`, 429, 500)** |
+| **Side-Effect Verification** | Observes API payloads sent by agent | Observes system availability & uptime | Measures prompt benchmark score | **Ground-truth effect ledger (verifies actual mutations & duplicates)** |
+| **Transaction Identity** | Trace ID / Span ID tracking | Transport-level connection tracking | Prompt / run session identifier | **Decoupled `operation_id`, `attempt_id`, and `effect_id`** |
+| **Execution Sandboxing** | Standard host execution | Runs against deployed target environments | Sandbox dependent on benchmark harness | **Hardened Linux container isolation (`--network=none`, cap-drop)** |
+| **Local / Offline Workflow** | Often relies on hosted SaaS or cloud backends | Requires local proxy or agent daemons | Local or remote LLM API calls | **Local-first (in-memory or SQLite, zero API keys required)** |
 
 ---
 
-## 3. Why Existing Solutions Fall Short
+## 4. Current Integrations vs. Future Roadmap
 
-### 3.1 LLM Observability Tools Are Not Recovery Testers
-Observability tools record what happened. If an agent times out on a payment call, retries, and double-charges a customer, LangSmith will accurately show two tool calls. **Observability does not prevent the bug, test the retry handler, or assert idempotency in CI.**
+To ensure clarity and credibility, RecoveryBench explicitly distinguishes currently verified framework adapters from roadmap items:
 
-### 3.2 LLM-as-a-Judge Cannot Verify Ground-Truth State
-Asking an LLM *"Did the agent successfully recover from the timeout?"* produces hallucinations. An LLM cannot query the internal balance of a bank mock or inspect database commit records. RecoveryBench relies strictly on deterministic assertions over an immutable ledger.
+### Currently Supported & Verified (v0.1.0)
+- **Generic Python Callables:** Any Python function or method adapted via `@agent` or `wrap_agent()`.
+- **LangGraph Adapter:** Native integration with LangGraph `StateGraph` and LangChain `@tool` definitions, intercepting `ToolNode` exceptions and evaluating state transitions.
 
-### 3.3 Traditional Mocks Lack State-Fault Coupling
-Standard mocks (`unittest.mock`, `responses`, `WireMock`) return static status codes. They do not simulate the nuanced state transitions of real-world distributed failures—such as committing an item to a database *first*, and *then* dropping the TCP connection before sending the 200 OK.
+### Future Roadmap
+- **Model Context Protocol (MCP) Adapter:** Integration testing for MCP tool servers and client agents under adverse fault conditions.
+- **CrewAI Framework Adapter:** Dedicated hooks and task execution wrapper for CrewAI multi-agent crews.
+- **AutoGen Framework Adapter:** ConversableAgent tool-execution interceptor and recovery evaluator.
 
 ---
 
-## 4. Value Proposition Summary
+## 5. Comparison Sources & Documentation References
 
-1. **Financial & Data Safety:** Catch double-charges, orphaned reservations, and duplicate ticket creation in pull requests before customer impact.
-2. **Speed & Determinism:** Run 50 fault scenarios in under 5 seconds with zero flaky `time.sleep` calls.
-3. **Developer Trust:** Gives teams the empirical confidence to unleash autonomous agents on real external APIs.
+The comparative statements in this document were compiled from public documentation, specifications, and repositories accessed on **November 15–16, 2026**:
+
+1. **LangSmith Documentation:** [https://docs.smith.langchain.com/](https://docs.smith.langchain.com/) (Accessed: November 15, 2026) — Verified focus on distributed tracing, prompt playgrounds, and dataset evaluation.
+2. **Langfuse Documentation:** [https://langfuse.com/docs](https://langfuse.com/docs) (Accessed: November 15, 2026) — Verified open-source LLM engineering platform capabilities (tracing, prompt management, evaluation).
+3. **Arize Phoenix Documentation:** [https://docs.arize.com/phoenix/](https://docs.arize.com/phoenix/) (Accessed: November 15, 2026) — Verified observability, evaluation, and tracing workflows.
+4. **Gremlin Documentation:** [https://www.gremlin.com/docs/](https://www.gremlin.com/docs/) (Accessed: November 15, 2026) — Verified infrastructure and application chaos injection models.
+5. **Shopify Toxiproxy Repository:** [https://github.com/Shopify/toxiproxy](https://github.com/Shopify/toxiproxy) (Accessed: November 15, 2026) — Verified TCP proxy fault injection mechanics.
+6. **RetryBench Research & Benchmarking Literature:** Academic benchmarks analyzing LLM retry behavior and failure modes (Accessed: November 15, 2026).

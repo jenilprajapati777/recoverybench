@@ -1,7 +1,7 @@
 # RecoveryBench - Product Specification
 
 **Version:** 0.1.0 (MVP)  
-**Status:** In Active Development  
+**Status:** MVP Completed (P0-1, P0-2, P0-3, P0-4 Certified)  
 **Tagline:** *"Test the failure before production does."*
 
 ---
@@ -15,9 +15,9 @@ However, standard distributed systems realities apply:
 2. Third-party APIs experience intermittent delays, 5xx outages, and rate limits (429).
 3. The "Two Generals' Problem" guarantees that an agent cannot know whether a request committed on the server if the acknowledgement network response drops after commit (`timeout_after_commit`).
 
-When naive LLM agents face unexpected timeouts or transient tool errors, their default prompt loops retry blindly. Without stable idempotency keys, pre-flight reconciliation, or explicit transaction state handling, these retries trigger catastrophic duplicated side-effects: **double-charging customers, creating duplicate shipments, or triggering redundant workflows.**
+When naive LLM agents face unexpected timeouts or transient tool errors, their default prompt loops retry blindly. Without stable idempotency keys, pre-flight reconciliation, or explicit transaction state handling, these retries trigger duplicated side-effects: **double-charging customers, creating duplicate shipments, or triggering redundant workflows.**
 
-Existing LLM tooling focuses almost exclusively on **observability** (traces, token counts, latency) or **benchmark evaluation** (accuracy, MMLU scores, hallucination detection). **None of these evaluate post-fault recovery mechanics against ground-truth side-effects.**
+Existing LLM tooling focuses primarily on **observability** (traces, token counts, latency) or **benchmark evaluation** (evaluating model accuracy, MMLU scores, hallucination detection). RecoveryBench complements these tools by providing pre-deployment testing of agent recovery behavior and business side-effect integrity under deterministic distributed faults.
 
 **RecoveryBench** is a local-first, deterministic AI agent recovery testing platform. It injects precision faults into mock tool environments, monitors every side effect in an immutable ledger, and deterministically asserts whether an agent recovered safely without duplicate or orphaned side-effects.
 
@@ -26,10 +26,11 @@ Existing LLM tooling focuses almost exclusively on **observability** (traces, to
 ## 2. Target Personas & Use Cases
 
 ### 2.1 Target Personas
-- **AI Agent Engineers & Framework Users:** Building autonomous agents with LangGraph, CrewAI, AutoGen, or custom tool-calling loops.
-- **Backend & Platform Engineers:** Responsible for system reliability, API integrations, and preventing financial/data discrepancies caused by AI automation.
-- **MCP Tool Developers:** Creating tools conforming to Model Context Protocol (MCP) requiring stress testing under adverse fault conditions.
+- **Python AI Agent Developers:** Authoring resilient agent tool-calling workflows and recovery handlers.
+- **LangGraph Developers:** Building cyclic or directed graph workflows with `StateGraph` and `ToolNode`.
+- **Backend & Platform Engineers:** Responsible for system reliability, API integrations, and preventing financial or data discrepancies caused by AI automation.
 - **QA & Reliability Engineers:** Setting up automated CI/CD pipelines to certify that agent releases meet side-effect safety invariants.
+*(Note: Dedicated adapters for CrewAI, AutoGen, and Model Context Protocol (MCP) tool servers are planned for future roadmap milestones; current v0.1.0 supports generic Python callables and native LangGraph workflows).*
 
 ### 2.2 Primary Use Cases
 1. **The Double-Charge Test (`timeout_after_commit`):** Simulate server-side commit followed by client socket timeout. Assert that agent retries use an identical idempotency key or reconcile prior state before attempting another charge.
@@ -45,7 +46,7 @@ Existing LLM tooling focuses almost exclusively on **observability** (traces, to
 1. **Local-First & Zero Cloud Lock-in:** RecoveryBench runs locally offline. No telemetry, no mandatory SaaS accounts, no cloud credits required.
 2. **Ground Truth Over LLM-as-a-Judge:** Recovery verification never relies on prompting an LLM to guess if an action succeeded. Evaluation is derived from an append-only SQLite/Memory effect ledger and deterministic assertions.
 3. **Virtual Time & Zero Flaky Sleep:** Faults and retry policies are evaluated using deterministic simulated time steps, eliminating brittle `time.sleep()` calls in automated test suites.
-4. **Mock Tool Isolation:** Mock services strictly encapsulate state. Agents interact with injected tool interfaces rather than production services. *(Note: OS-level socket interception is scheduled for P0-3).*
+4. **Mock Tool & Container Isolation:** Mock services strictly encapsulate state. Agents interact with injected tool interfaces rather than production services. Real container isolation with `--network=none` is fully implemented and certified (Linux containers sharing the host kernel; see `docs/SECURITY_MODEL.md`).
 5. **Honest Evaluation:** RecoveryBench does not claim universal proof of distributed consensus; it empirically verifies agent behavior against defined fault models.
 
 ---
@@ -58,13 +59,13 @@ Existing LLM tooling focuses almost exclusively on **observability** (traces, to
 | **REQ-02** | **Append-Only Effect Ledger** | SQLite/Memory event log tracking every tool request with decoupled transaction identity (`operation_id`, `attempt_id`, `effect_id`, `request_fingerprint`, `idempotency_key_hash`). | Completed |
 | **REQ-03** | **Mock Payment Service** | Simulated mock payment provider supporting ledger-backed simulated balance/transaction states and hookable fault points. | Completed |
 | **REQ-04** | **Fault Injector** | Precision interceptor supporting all 6 deterministic fault modes (`timeout_before_commit`, `timeout_after_commit`, `duplicate_delivery`, `http_429_then_success`, `http_500_transient`, `malformed_tool_response`). | Completed |
-| **REQ-05** | **Agent Adapter Contract** | Clean Python protocol allowing arbitrary agents to invoke tools and handle recovery loops. | Completed |
+| **REQ-05** | **Agent Adapter Contract** | Clean Python protocol allowing arbitrary agents to invoke tools and handle recovery loops. Supports Generic Callables and LangGraph. | Completed |
 | **REQ-06** | **Naive vs. Safe Demo** | Deterministic comparison demonstrating an unsafe naive retry (duplicate charge) vs. safe idempotent retry (single charge). | Completed |
 | **REQ-07** | **Recovery Evaluator** | Rule-based engine computing duplicate effects, missing effects, idempotency stability, retry bounds, agent truthfulness, and unknown-outcome handling using explicit transaction identity. | Completed |
 | **REQ-08** | **CLI Suite** | Commands: `init`, `list-scenarios`, `demo`, `run`, `replay`, `report`, `validate`, `doctor` with strict exit codes (0, 1, 2, 3). | Completed |
 | **REQ-09** | **Reporting Engine** | Multi-format reporting: machine-readable JSON, collapsible HTML with ledger evidence, and standard JUnit XML. | Completed |
 | **REQ-10** | **Replay Engine** | Deterministic rerun from stored traces to reproduce failures and audit historical runs. | Completed |
-| **REQ-11** | **Container Execution Sandbox** | Real OS-level container isolation (`--network=none`), staged workspace credential exclusion, symlink escape detection, resource bounds, and stdio IPC protocol. | Completed |
+| **REQ-11** | **Container Execution Sandbox** | Real OS-level Linux container isolation (`--network=none`), staged workspace credential exclusion, symlink escape detection, resource bounds, and stdio IPC protocol (Linux containers sharing host kernel; not hardware VMs). | Completed |
 
 ---
 

@@ -1,0 +1,43 @@
+name: Framework Integration Request
+description: Request or propose a new agent framework adapter (e.g. CrewAI, AutoGen, Model Context Protocol)
+title: "[Integration]: "
+labels: ["integration", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Framework Adapter Request
+        RecoveryBench currently provides native adapters for **Generic Python Callables** and **LangGraph**.
+        Use this template to propose integration with additional agent frameworks.
+
+  - type: input
+    id: framework
+    attributes:
+      label: Framework Name & Version
+      placeholder: "e.g. CrewAI >= 0.28.0, AutoGen >= 0.4.0, Model Context Protocol (MCP)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Target Agent Workflow & Tool Execution Model
+      description: How does this framework invoke external tools and handle errors, retries, and state?
+      placeholder: "Describe how agents in this framework declare tool calls and handle ToolError exceptions..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: integration-points
+    attributes:
+      label: Proposed Adapter Architecture
+      description: Where should RecoveryBench intercept tool execution and inject simulated faults?
+      placeholder: "e.g. Subclassing BaseTool / custom Hook / Middleware / Stdio IPC bridge..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References & Documentation Links
+      description: Link to the framework repository, relevant documentation, or example implementations.

@@ -7,7 +7,7 @@
 
 ## 1. High-Level Architecture Overview
 
-RecoveryBench is constructed around a modular **Simulated Execution & Ground-Truth Verification Loop**. The architecture routes the Agent Under Test (AUT) through simulated tool interfaces while intercepting side-effect attempts in a deterministic fault-injected harness. *(Note: Operating-system-level socket isolation is scheduled for P0-3).*
+RecoveryBench is constructed around a modular **Simulated Execution & Ground-Truth Verification Loop**. The architecture routes the Agent Under Test (AUT) through simulated tool interfaces while intercepting side-effect attempts in a deterministic fault-injected harness. In isolated mode, agents execute inside a hardened Linux container with `--network=none` (Linux containers share the host operating system kernel; see [SECURITY_MODEL.md](SECURITY_MODEL.md)).
 
 ```mermaid
 flowchart TD

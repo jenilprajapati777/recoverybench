@@ -8,7 +8,7 @@ This guide covers integrating autonomous AI agents with RecoveryBench using the 
 
 ## 1. Architecture Overview
 
-RecoveryBench connects the Agent Under Test (AUT) to simulated tool interfaces rather than real-world payment gateways or production infrastructure. It runs the agent inside a controlled virtual-time harness equipped with deterministic fault injection and an append-only Effect Ledger. *(Note: Operating-system-level socket isolation is scheduled for P0-3).*
+RecoveryBench connects the Agent Under Test (AUT) to simulated tool interfaces rather than real-world payment gateways or production infrastructure. It runs the agent inside a controlled virtual-time harness equipped with deterministic fault injection and an append-only Effect Ledger. When running with container isolation (`--isolation isolated`), the agent executes inside a hardened Linux container configured with `--network=none` (Linux containers share the host operating system kernel; see [SECURITY_MODEL.md](SECURITY_MODEL.md)).
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
