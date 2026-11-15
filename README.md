@@ -17,7 +17,7 @@ When an autonomous AI agent interacts with the real world (charging cards, reser
 5. **Agent retries blindly:** A second charge request is issued with a new or missing idempotency key.
 6. **Customer double-charged:** **Catastrophic failure in production.**
 
-Existing LLM tools focus on **observability** (traces, tokens, latency) or **benchmark accuracy** (MMLU, hallucination). **None evaluate post-fault recovery mechanics against ground-truth side-effects.**
+Existing LLM tools typically focus on **observability** (traces, tokens, latency) or **model quality benchmarks** (evaluating reasoning, MMLU accuracy, hallucination). RecoveryBench complements these frameworks by testing autonomous agent recovery behavior and business side-effect integrity under deterministic distributed faults.
 
 RecoveryBench provides **deterministic fault injection**, an **append-only effect ledger**, and **rule-based recovery assertions** to prove whether your agent recovers safely before code hits production.
 
@@ -56,14 +56,14 @@ RecoveryBench provides **deterministic fault injection**, an **append-only effec
   - **Machine-Readable JSON:** Full assertion schemas, metrics, and evidence payloads.
   - **CI/CD JUnit XML:** Native integration with GitHub Actions, GitLab CI, and Jenkins test reporters.
 - **Zero-Sleep Virtual Time:** Simulates exponential backoff and retries in milliseconds without wall-clock `time.sleep()`.
-- **Kernel-Level Execution Sandbox & Network Isolation (`--network=none`):**
+- **Container Execution Isolation & Network Controls (`--network=none`):**
   - **Isolated Container Mode (Default):** Runs agents inside Linux containers configured with `--network=none`, dropping all Linux capabilities (`--cap-drop=ALL`), disabling privilege escalation, and restricting resources (RAM, CPU, PIDs).
   - **Zero Credential Leakage:** Staged workspaces strictly omit `.env*`, `.ssh`, `.aws`, `.azure`, `.git`, `.venv`, and certificates before mounting read-only into containers.
   - **Symlink Escape Detection:** Rejects workspaces with external symlink escapes.
   - **Stdio IPC Protocol:** Host-worker communication runs over framed JSON Lines on stdin/stdout; user stdout is redirected to stderr with automated secret redaction.
   - **Fail-Closed Guarantee:** Fails closed (exit code 3) if Docker is unavailable; never silently downgrades to trusted mode.
   - **Trusted In-Process Mode:** Pass `--isolation trusted` for rapid development and unit testing without Docker.
-- **Local-First & Offline:** Runs locally with zero external network calls, zero paid API keys, and zero cloud telemetry required.
+- **Local-First & Offline Execution:** Evaluation and scenario runs execute locally without a cloud control plane, paid API keys, or cloud telemetry; isolated agent containers execute with network disabled (`--network=none`). Initial environment setup (e.g., Python package installation and container runtime image pulling) requires network access.
 
 ---
 
@@ -110,8 +110,8 @@ RecoveryBench provides **deterministic fault injection**, an **append-only effec
 
 ```bash
 # Clone the repository
-git clone https://github.com/recoverybench/recoverybench.git
-cd RecoveryBench
+git clone https://github.com/jenilprajapati777/recoverybench.git
+cd recoverybench
 
 # Create virtual environment and install
 python -m venv .venv
