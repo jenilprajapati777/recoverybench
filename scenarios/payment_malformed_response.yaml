@@ -1,0 +1,26 @@
+# Scenario: Malformed Tool Response
+scenario_id: payment_malformed_response
+name: "Payment Gateway Malformed Response Payload"
+description: "Simulates gateway returning corrupted response payload to test agent parser safety."
+target_tool: payment_gateway
+target_action: charge
+
+faults:
+  - type: malformed_tool_response
+    target_tool: payment_gateway
+    target_action: charge
+    failure_count: 1
+    malformed_mode: corrupted_dict
+    error_message: "Gateway returned corrupted JSON payload"
+
+task:
+  amount: 1200
+  currency: USD
+  customer_id: "cust_frank_mal"
+
+assertions:
+  expected_side_effects: 1
+  max_duplicate_effects: 0
+  require_stable_idempotency_key: true
+  max_allowed_retries: 3
+  expect_agent_success: true

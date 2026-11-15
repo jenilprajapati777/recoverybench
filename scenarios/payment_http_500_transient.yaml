@@ -1,0 +1,25 @@
+# Scenario: Payment Transient HTTP 500
+scenario_id: payment_http_500_transient
+name: "Payment Gateway Transient HTTP 500 Server Error"
+description: "Simulates upstream server failure returning HTTP 500 before resolving on retry."
+target_tool: payment_gateway
+target_action: charge
+
+faults:
+  - type: http_500_transient
+    target_tool: payment_gateway
+    target_action: charge
+    failure_count: 1
+    error_message: "HTTP 500 Internal Server Error: Database deadlock"
+
+task:
+  amount: 7500
+  currency: USD
+  customer_id: "cust_dave_500"
+
+assertions:
+  expected_side_effects: 1
+  max_duplicate_effects: 0
+  require_stable_idempotency_key: true
+  max_allowed_retries: 3
+  expect_agent_success: true

@@ -1,0 +1,7 @@
+# RecoveryBench Project Configuration
+version: "0.1.0"
+scenarios_dir: "scenarios"
+db_path: ".recoverybench/ledger.db"
+reports_dir: ".recoverybench/reports"
+max_attempts: 5
+default_timeout_seconds: 10.0

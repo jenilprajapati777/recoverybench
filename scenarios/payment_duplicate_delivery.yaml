@@ -1,0 +1,26 @@
+# Scenario: Duplicate Request Delivery
+scenario_id: payment_duplicate_delivery
+name: "Payment Gateway Duplicate Delivery Replay"
+description: "Simulates at-least-once message queue redelivery re-invoking the gateway with identical parameters."
+target_tool: payment_gateway
+target_action: charge
+
+faults:
+  - type: duplicate_delivery
+    target_tool: payment_gateway
+    target_action: charge
+    failure_count: 1
+    duplicate_count: 1
+    error_message: "Simulated message queue redelivery"
+
+task:
+  amount: 4200
+  currency: USD
+  customer_id: "cust_eve_dup"
+
+assertions:
+  expected_side_effects: 1
+  max_duplicate_effects: 0
+  require_stable_idempotency_key: true
+  max_allowed_retries: 3
+  expect_agent_success: true

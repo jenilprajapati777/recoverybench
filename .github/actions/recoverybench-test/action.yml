@@ -1,0 +1,90 @@
+name: "RecoveryBench Test Action"
+description: "Run deterministic AI agent recovery testing and side-effect assertions in CI/CD"
+author: "RecoveryBench Contributors"
+
+inputs:
+  scenarios-dir:
+    description: "Directory containing recovery scenario YAML files"
+    required: false
+    default: "scenarios"
+  agent:
+    description: "Agent adapter to evaluate: 'idempotent', 'naive', 'langgraph-idempotent', 'langgraph-naive'"
+    required: false
+    default: "idempotent"
+  output-dir:
+    description: "Directory to save generated JSON, HTML, and JUnit XML reports"
+    required: false
+    default: "reports"
+  junit:
+    description: "Whether to emit JUnit XML reports"
+    required: false
+    default: "true"
+  isolation:
+    description: "Execution isolation mode: 'isolated' (Docker container) or 'trusted' (in-process)"
+    required: false
+    default: "isolated"
+  fail-on-failure:
+    description: "Whether to fail the step if any recovery assertion fails"
+    required: false
+    default: "true"
+
+outputs:
+  passed:
+    description: "Whether all evaluated scenarios passed ('true' or 'false')"
+    value: ${{ steps.run-suite.outputs.passed }}
+  total-scenarios:
+    description: "Number of scenarios evaluated"
+    value: ${{ steps.run-suite.outputs.total_scenarios }}
+  duplicate-effects:
+    description: "Total duplicate side effects detected"
+    value: ${{ steps.run-suite.outputs.duplicate_effects }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Scenarios
+      shell: bash
+      run: |
+        echo "Validating scenarios in: ${{ inputs.scenarios-dir }}"
+        recoverybench validate "${{ inputs.scenarios-dir }}"
+
+    - name: Run RecoveryBench Suite
+      id: run-suite
+      shell: bash
+      run: |
+        JUNIT_FLAG="--junit"
+        if [ "${{ inputs.junit }}" = "false" ]; then
+          JUNIT_FLAG="--no-junit"
+        fi
+
+        echo "Executing RecoveryBench suite..."
+        set +e
+        recoverybench suite "${{ inputs.scenarios-dir }}" \
+          --agent "${{ inputs.agent }}" \
+          --isolation "${{ inputs.isolation }}" \
+          --output-dir "${{ inputs.output-dir }}" \
+          $JUNIT_FLAG
+        EXIT_CODE=$?
+        set -e
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Extract metrics from suite_summary.json if generated
+        if [ -f "${{ inputs.output-dir }}/suite_summary.json" ]; then
+          python -c "
+import json
+with open('${{ inputs.output-dir }}/suite_summary.json') as f:
+    d = json.load(f)
+print(f'total_scenarios={d.get(\"total_scenarios\", 0)}')
+print(f'duplicate_effects={sum(s.get(\"duplicate_effects\", 0) for s in d.get(\"scenarios\", []))}')
+" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [ $EXIT_CODE -ne 0 ] && [ "${{ inputs.fail-on-failure }}" = "true" ]; then
+          echo "::error::RecoveryBench evaluation failed with exit code $EXIT_CODE. One or more agent recovery invariants were violated!"
+          exit $EXIT_CODE
+        fi

@@ -1,0 +1,26 @@
+# Scenario: Payment Rate Limit HTTP 429
+scenario_id: payment_rate_limit_429
+name: "Payment Gateway HTTP 429 Rate Limiting"
+description: "Simulates upstream HTTP 429 Too Many Requests with Retry-After backoff hint before succeeding."
+target_tool: payment_gateway
+target_action: charge
+
+faults:
+  - type: http_429_then_success
+    target_tool: payment_gateway
+    target_action: charge
+    failure_count: 1
+    retry_after_seconds: 1.0
+    error_message: "HTTP 429 Too Many Requests: Rate limit exceeded"
+
+task:
+  amount: 2500
+  currency: USD
+  customer_id: "cust_charlie_429"
+
+assertions:
+  expected_side_effects: 1
+  max_duplicate_effects: 0
+  require_stable_idempotency_key: true
+  max_allowed_retries: 3
+  expect_agent_success: true
