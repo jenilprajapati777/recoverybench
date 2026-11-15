@@ -71,7 +71,7 @@ Every matrix job executes the full security verification pipeline without bypass
 1. **Dependency Installation:** `python -m pip install -e ".[langgraph,dev]"`
 2. **Pinned Docker Sandbox Runtime Image:**
    ```bash
-   docker pull python:3.11-slim@sha256:d6b63d7e5b61e0586e96ebae85fcf2559ec1cf7a5223c72b226f30a9167dfab7
+   docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
    ```
 3. **Pre-flight Environment Isolation Health Check:**
    ```bash

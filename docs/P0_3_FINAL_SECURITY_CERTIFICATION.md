@@ -95,7 +95,7 @@ Prior to this certification, `SandboxConfig` allowed mutable tags like `python:3
 1. **Default Pinned Digest:**
    ```python
    DEFAULT_RUNTIME_IMAGE_DIGEST = (
-       "python:3.11-slim@sha256:d6b63d7e5b61e0586e96ebae85fcf2559ec1cf7a5223c72b226f30a9167dfab7"
+       "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535"
    )
    ```
 2. **Strict Mutable Tag Rejection:**
@@ -109,7 +109,7 @@ Prior to this certification, `SandboxConfig` allowed mutable tags like `python:3
    - Local development override: `SandboxConfig(allow_mutable_image_tags=True, runtime_image="python:3.11-slim")`.
 5. **CI Alignment:**
    Both `.github/workflows/recoverybench-ci.yml` and `.github/workflows/recoverybench-pr-gate.yml` pull the identical digest:
-   `docker pull python:3.11-slim@sha256:d6b63d7e5b61e0586e96ebae85fcf2559ec1cf7a5223c72b226f30a9167dfab7`.
+   `docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535`.
 
 ---
 

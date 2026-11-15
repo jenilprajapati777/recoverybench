@@ -68,7 +68,7 @@ jobs:
 
       - name: Pull Pinned Docker Sandbox Runtime Image
         run: |
-          docker pull python:3.11-slim@sha256:d6b63d7e5b61e0586e96ebae85fcf2559ec1cf7a5223c72b226f30a9167dfab7
+          docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
       - name: Environment Health Check (Doctor with Required Isolation)
         run: recoverybench doctor --require-isolation
@@ -77,6 +77,7 @@ jobs:
         run: recoverybench validate scenarios
 
       - name: Execute RecoveryBench Scenario Suite
+        id: scenario_suite
         run: |
           AGENT="${{ github.event.inputs.agent || 'idempotent' }}"
           ISOLATION="${{ github.event.inputs.isolation || 'isolated' }}"
@@ -89,7 +90,7 @@ jobs:
 
       - name: Publish JUnit Test Results
         uses: mikepenz/action-junit-report@v4
-        if: always()
+        if: always() && (steps.scenario_suite.conclusion == 'success' || steps.scenario_suite.conclusion == 'failure')
         with:
           report_paths: "reports/*_report.xml"
           check_name: "RecoveryBench Invariant Results (${{ matrix.os }}, py${{ matrix.python-version }})"
@@ -98,7 +99,7 @@ jobs:
 
       - name: Upload Test Report Artifacts
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && (steps.scenario_suite.conclusion == 'success' || steps.scenario_suite.conclusion == 'failure')
         with:
           name: recoverybench-reports-${{ matrix.os }}-py${{ matrix.python-version }}
           path: reports/
