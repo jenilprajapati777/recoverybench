@@ -470,15 +470,53 @@ def test_normalize_staged_permissions_exception_cleans_up(tmp_path: Path, monkey
     """Verify that an exception during permission normalization cleans up the partially staged directory."""
     source_dir = tmp_path / "source"
     source_dir.mkdir()
-    (source_dir / "agent.py").write_text("def run(): pass\n", encoding="utf-8")
+    source_file = source_dir / "agent.py"
+    source_file.write_text("def run(): pass\n", encoding="utf-8")
+    original_content = source_file.read_text(encoding="utf-8")
+    original_stat = os.stat(source_file).st_mode
 
-    def failing_chmod(path: Any, mode: int) -> None:
+    captured_staged_dirs: list[Path] = []
+
+    def failing_normalize(staged_dir: str | Path) -> None:
+        p = Path(staged_dir)
+        captured_staged_dirs.append(p)
+        # Verify staging directory and copied files exist before normalization failure
+        assert p.exists()
+        assert (p / "agent.py").exists()
+        raise ConfigurationError(f"Failed to normalize staging root permissions on '{staged_dir}': simulated failure")
+
+    monkeypatch.setattr(WorkspaceStaging, "normalize_staged_permissions", failing_normalize)
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        WorkspaceStaging.stage_workspace(source_dir)
+
+    assert "Failed to normalize staging root permissions" in exc_info.value.message
+    assert len(captured_staged_dirs) == 1
+    staged_path = captured_staged_dirs[0]
+
+    # Verify that the partially staged directory was completely removed by cleanup
+    assert not staged_path.exists()
+
+    # Verify that the original source file still exists and remains unchanged
+    assert source_file.exists()
+    assert source_file.read_text(encoding="utf-8") == original_content
+    assert os.stat(source_file).st_mode == original_stat
+
+
+def test_normalize_staged_permissions_wraps_chmod_os_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that an OSError from os.chmod during normalize_staged_permissions is wrapped in ConfigurationError."""
+    staged_dir = tmp_path / "staged"
+    staged_dir.mkdir()
+    (staged_dir / "agent.py").write_text("X = 1\n", encoding="utf-8")
+
+    def failing_chmod(path: Any, mode: int, *args: Any, **kwargs: Any) -> None:
         raise OSError("Permission denied on chmod")
 
     monkeypatch.setattr(os, "chmod", failing_chmod)
 
     with pytest.raises(ConfigurationError) as exc_info:
-        WorkspaceStaging.stage_workspace(source_dir)
+        WorkspaceStaging.normalize_staged_permissions(staged_dir)
+
     assert "Failed to normalize staging root permissions" in exc_info.value.message
 
 

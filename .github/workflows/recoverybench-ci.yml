@@ -121,4 +121,5 @@ jobs:
 
       - name: Run Live Docker Network Isolation Integration Tests
         run: |
+          docker info
           pytest -v -rs tests/security/test_network_isolation.py
