@@ -1,11 +1,14 @@
 """Tests for filesystem staging security, sensitive file exclusion, allowlist enforcement, and symlink security."""
 
 import os
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from recoverybench.errors import ConfigurationError
+from recoverybench.sandbox.docker_client import DockerClient
 from recoverybench.sandbox.staging import (
     EXCLUDED_DIR_NAMES,
     EXCLUDED_FILE_EXTENSIONS,
@@ -347,3 +350,224 @@ def test_stage_workspace_rejects_manifest_path_traversal(tmp_path: Path) -> None
     with pytest.raises(ConfigurationError) as exc_info:
         WorkspaceStaging.stage_workspace(source_dir, manifest_files=["../outside_file.py"])
     assert "escapes workspace root" in exc_info.value.message
+
+
+def test_normalize_staged_permissions_root_and_nested_directories(tmp_path: Path) -> None:
+    """Verify that staged root and nested directories are traversable and listable (0o755)."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "agent.py").write_text("def run(): pass\n", encoding="utf-8")
+    sub = source_dir / "pkg"
+    sub.mkdir()
+    (sub / "mod.py").write_text("X = 1\n", encoding="utf-8")
+
+    staged = WorkspaceStaging.stage_workspace(source_dir)
+    try:
+        assert staged.exists()
+        assert (staged / "pkg").is_dir()
+        assert (staged / "pkg" / "mod.py").is_file()
+
+        # On POSIX systems, verify exact permission bits
+        if os.name == "posix":
+            import stat
+
+            assert stat.S_IMODE(os.stat(staged).st_mode) == 0o755
+            assert stat.S_IMODE(os.stat(staged / "pkg").st_mode) == 0o755
+            assert stat.S_IMODE(os.stat(staged / "agent.py").st_mode) == 0o644
+            assert stat.S_IMODE(os.stat(staged / "pkg" / "mod.py").st_mode) == 0o644
+    finally:
+        WorkspaceStaging.cleanup_workspace(staged)
+
+
+def test_normalize_staged_permissions_normalizes_restrictive_source_file_modes(tmp_path: Path) -> None:
+    """Verify restrictive source file modes (e.g. 0o600) are normalized in staged copy while original remains untouched."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    private_file = source_dir / "private_logic.py"
+    private_file.write_text("def secret_logic(): return 123\n", encoding="utf-8")
+
+    try:
+        os.chmod(private_file, 0o600)
+    except OSError:
+        pass
+
+    original_stat = os.stat(private_file).st_mode
+
+    staged = WorkspaceStaging.stage_workspace(source_dir)
+    try:
+        staged_file = staged / "private_logic.py"
+        assert staged_file.exists()
+
+        # Original source file must be completely untouched
+        assert os.stat(private_file).st_mode == original_stat
+
+        if os.name == "posix":
+            import stat
+
+            # Staged copy must be normalized to 0o644 for non-root container reader
+            assert stat.S_IMODE(os.stat(staged_file).st_mode) == 0o644
+    finally:
+        WorkspaceStaging.cleanup_workspace(staged)
+
+
+def test_normalize_staged_permissions_worker_script_and_cleanup(tmp_path: Path) -> None:
+    """Verify injected worker script is normalized and cleanup removes staging directory."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "agent.py").write_text("def run(): pass\n", encoding="utf-8")
+
+    worker_content = "import os\nprint('Worker loaded')\n"
+    staged = WorkspaceStaging.stage_workspace(source_dir, worker_script_content=worker_content)
+    try:
+        worker_file = staged / "_recoverybench_worker.py"
+        assert worker_file.exists()
+        assert worker_file.read_text(encoding="utf-8") == worker_content
+
+        if os.name == "posix":
+            import stat
+
+            assert stat.S_IMODE(os.stat(worker_file).st_mode) == 0o644
+    finally:
+        WorkspaceStaging.cleanup_workspace(staged)
+
+    # Verify cleanup removed the directory
+    assert not staged.exists()
+
+
+def test_normalize_staged_permissions_symlink_safety(tmp_path: Path) -> None:
+    """Verify symlinks are not followed when setting permissions, and symlink root is rejected."""
+    # 1. Reject symlink root
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    symlink_dir = tmp_path / "symlink_dir"
+    try:
+        symlink_dir.symlink_to(real_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        with pytest.raises(ConfigurationError) as exc_info:
+            WorkspaceStaging.normalize_staged_permissions(symlink_dir)
+        assert "cannot be a symlink" in exc_info.value.message
+
+    # 2. Internal symlinks are not modified
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "target.py").write_text("X = 1\n", encoding="utf-8")
+    link_file = source_dir / "link.py"
+    try:
+        link_file.symlink_to(source_dir / "target.py")
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        staged = WorkspaceStaging.stage_workspace(source_dir)
+        try:
+            assert (staged / "link.py").exists()
+        finally:
+            WorkspaceStaging.cleanup_workspace(staged)
+
+
+def test_normalize_staged_permissions_exception_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that an exception during permission normalization cleans up the partially staged directory."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "agent.py").write_text("def run(): pass\n", encoding="utf-8")
+
+    def failing_chmod(path: Any, mode: int) -> None:
+        raise OSError("Permission denied on chmod")
+
+    monkeypatch.setattr(os, "chmod", failing_chmod)
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        WorkspaceStaging.stage_workspace(source_dir)
+    assert "Failed to normalize staging root permissions" in exc_info.value.message
+
+
+client = DockerClient()
+docker_available, docker_reason = client.is_docker_available()
+
+
+@pytest.mark.skipif(not docker_available, reason=f"Docker is unavailable: {docker_reason}")
+def test_docker_real_container_workspace_permissions_and_read_only(tmp_path: Path) -> None:
+    """Real Docker test verifying non-root container (nobody:nogroup) can read workspace and cannot write."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "agent.py").write_text("def run(): return 'agent_ok'\n", encoding="utf-8")
+    pkg = source_dir / "mypkg"
+    pkg.mkdir()
+    (pkg / "submod.py").write_text("VALUE = 99\n", encoding="utf-8")
+
+    worker_code = (
+        "import os\n"
+        "print(f'WORKER_USER:{os.getuid()}:{os.getgid()}')\n"
+    )
+
+    staged = WorkspaceStaging.stage_workspace(source_dir, worker_script_content=worker_code)
+    try:
+        # A & E: Verify worker script can be opened and read by nobody:nogroup
+        # B & C: Verify declared agent source modules can be read
+        check_cmd = [
+            "docker", "run", "--rm",
+            "--user", "nobody:nogroup",
+            "--read-only",
+            "--network", "none",
+            "-v", f"{staged.resolve()}:/workspace:ro",
+            "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535",
+            "python3", "-c",
+            (
+                "with open('/workspace/_recoverybench_worker.py') as f: content = f.read()\n"
+                "assert 'WORKER_USER' in content\n"
+                "with open('/workspace/agent.py') as f: content = f.read()\n"
+                "assert 'agent_ok' in content\n"
+                "with open('/workspace/mypkg/submod.py') as f: content = f.read()\n"
+                "assert 'VALUE = 99' in content\n"
+                "print('CONTAINER_READS_PASSED')\n"
+            ),
+        ]
+        r1 = subprocess.run(check_cmd, capture_output=True, text=True)
+        assert r1.returncode == 0, f"Container read failed: {r1.stderr}\nStdout: {r1.stdout}"
+        assert "CONTAINER_READS_PASSED" in r1.stdout
+
+        # F: Verify writes to /workspace fail (mounted read-only)
+        write_ws_cmd = [
+            "docker", "run", "--rm",
+            "--user", "nobody:nogroup",
+            "--read-only",
+            "--network", "none",
+            "-v", f"{staged.resolve()}:/workspace:ro",
+            "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535",
+            "bash", "-c", "echo 'evil' > /workspace/exploit.txt",
+        ]
+        r2 = subprocess.run(write_ws_cmd, capture_output=True, text=True)
+        assert r2.returncode != 0
+        assert "Read-only file system" in r2.stderr
+
+        # F: Verify writes to container root filesystem fail (read-only rootfs)
+        write_root_cmd = [
+            "docker", "run", "--rm",
+            "--user", "nobody:nogroup",
+            "--read-only",
+            "--network", "none",
+            "-v", f"{staged.resolve()}:/workspace:ro",
+            "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535",
+            "bash", "-c", "echo 'evil' > /root_exploit.txt",
+        ]
+        r3 = subprocess.run(write_root_cmd, capture_output=True, text=True)
+        assert r3.returncode != 0
+        assert "Read-only file system" in r3.stderr
+
+        # Verify /tmp tmpfs write succeeds within configured limits
+        tmpfs_cmd = [
+            "docker", "run", "--rm",
+            "--user", "nobody:nogroup",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--network", "none",
+            "-v", f"{staged.resolve()}:/workspace:ro",
+            "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535",
+            "bash", "-c", "echo 'sandbox_tmp_data' > /tmp/test.txt && cat /tmp/test.txt",
+        ]
+        r4 = subprocess.run(tmpfs_cmd, capture_output=True, text=True)
+        assert r4.returncode == 0
+        assert "sandbox_tmp_data" in r4.stdout
+    finally:
+        WorkspaceStaging.cleanup_workspace(staged)

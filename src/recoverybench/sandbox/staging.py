@@ -294,12 +294,72 @@ class WorkspaceStaging:
             shutil.copy2(source_file, dest_file)
 
     @classmethod
+    def normalize_staged_permissions(cls, staged_dir: str | Path) -> None:
+        """Normalize permissions of the temporary staged workspace for container execution.
+
+        Ensures the non-root container user ('nobody:nogroup') can traverse directories
+        and read regular files inside the read-only mounted workspace.
+
+        Security Policy:
+        - Staged root directory: 0o755 (drwxr-xr-x: owner rwx, group rx, other rx)
+        - Staged subdirectories: 0o755 (drwxr-xr-x: owner rwx, group rx, other rx)
+        - Staged regular files: 0o644 (-rw-r--r--: owner rw, group r, other r)
+        - Group and others are strictly granted read/traverse access only; write access is NEVER granted.
+        - Restrictive source file permissions (e.g. 0o600 or 0o700) are normalized so the non-root container
+          process can read its declared dependencies and the worker entrypoint.
+        - Symlinks are never followed while setting permissions, preventing modification of any target outside.
+        - Operates strictly on the temporary staged directory; original source files are never touched.
+        """
+        raw_path = Path(staged_dir)
+        if raw_path.is_symlink():
+            raise ConfigurationError(f"Security violation: Staged workspace root cannot be a symlink: {staged_dir}")
+        root = raw_path.resolve()
+        if not root.exists() or not root.is_dir():
+            raise ConfigurationError(f"Cannot normalize invalid staging directory: {staged_dir}")
+
+        # 1. Normalize staging root directory
+        try:
+            os.chmod(root, 0o755)
+        except OSError as exc:
+            raise ConfigurationError(f"Failed to normalize staging root permissions: {exc}") from exc
+
+        # 2. Walk staging directory without following symlinks
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            current_dir = Path(dirpath)
+            # Guard against directory symlinks during walk
+            if current_dir.is_symlink():
+                continue
+
+            for d in dirnames:
+                sub_dir = current_dir / d
+                if sub_dir.is_symlink():
+                    continue
+                try:
+                    os.chmod(sub_dir, 0o755)
+                except OSError as exc:
+                    raise ConfigurationError(
+                        f"Failed to normalize subdirectory permissions on '{sub_dir}': {exc}"
+                    ) from exc
+
+            for f in filenames:
+                file_path = current_dir / f
+                if file_path.is_symlink():
+                    continue
+                try:
+                    os.chmod(file_path, 0o644)
+                except OSError as exc:
+                    raise ConfigurationError(
+                        f"Failed to normalize file permissions on '{file_path}': {exc}"
+                    ) from exc
+
+    @classmethod
     def stage_workspace(
         cls,
         source_dir: str | Path,
         worker_script_content: str | None = None,
         custom_allowlist: set[str] | None = None,
         manifest_files: list[str] | None = None,
+        normalize_permissions: bool = True,
     ) -> Path:
         """Copy allowed files from source_dir into a secure temporary directory.
 
@@ -393,6 +453,10 @@ class WorkspaceStaging:
             if worker_script_content:
                 worker_dest = target_temp / "_recoverybench_worker.py"
                 worker_dest.write_text(worker_script_content, encoding="utf-8")
+
+            # Normalize permissions on staged workspace so non-root container user can traverse & read
+            if normalize_permissions:
+                cls.normalize_staged_permissions(target_temp)
 
             return target_temp
 
