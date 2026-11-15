@@ -2,9 +2,15 @@ name: RecoveryBench CI
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+      - fix/p0-audit-remediation
   pull_request:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+      - fix/p0-audit-remediation
   workflow_dispatch:
     inputs:
       agent:
@@ -37,11 +43,12 @@ concurrency:
 
 jobs:
   recovery-test:
-    name: Recovery Evaluation (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Recovery Evaluation (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: ["ubuntu-22.04", "ubuntu-24.04"]
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
@@ -85,7 +92,7 @@ jobs:
         if: always()
         with:
           report_paths: "reports/*_report.xml"
-          check_name: "RecoveryBench Invariant Results (${{ matrix.python-version }})"
+          check_name: "RecoveryBench Invariant Results (${{ matrix.os }}, py${{ matrix.python-version }})"
           fail_on_failure: true
           require_tests: true
 
@@ -93,7 +100,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: recoverybench-reports-py${{ matrix.python-version }}
+          name: recoverybench-reports-${{ matrix.os }}-py${{ matrix.python-version }}
           path: reports/
           retention-days: 30
 
