@@ -461,3 +461,54 @@ If Docker is not installed on the developer workstation (e.g. Windows without Do
 result = test_agent("payment_timeout_after_commit", agent, isolation="trusted")
 ```
 When running in trusted mode, the harness prints a visible warning banner explaining that network access is unconstrained.
+
+---
+
+## 7. Container-Isolated Agent Execution: SDK Imports and Environment Policies
+
+When agents run inside isolated Docker containers (`--network=none`), they execute in a minimal, read-only runtime environment. Understanding supported SDK imports, third-party dependency pre-installation, and environment policies is critical for smooth agent authoring.
+
+### 7.1 Supported SDK Imports in Isolated Containers
+The isolated container worker provides pure standard-library shims for core RecoveryBench agent primitives. Isolated agents can safely import:
+
+```python
+# 1. Base Agent Adapters and Return Structures
+from recoverybench.agent.base import AgentAdapter, AgentResult, TaskContext, ToolCaller
+
+# 2. Standard Tool Exceptions
+from recoverybench.errors import ToolError, RateLimitError, MalformedResponseError
+```
+
+#### What `TaskContext` and `ToolClient` Provide Inside Containers
+- `task.scenario_id`: Current evaluation scenario name (e.g. `"payment_timeout_after_commit"`).
+- `task.task_params` / `task.params`: Input payload dictionary for the task.
+- `task.operation_id`: Stable transaction operation identifier (P0-1 transaction boundary).
+- `task.clock.sleep(seconds)`: Non-blocking virtual time advancement.
+- `tool_call(tool_name, action, params, idempotency_key=..., operation_id=...)`: Line-framed IPC tool dispatch to host mock services.
+
+### 7.2 Third-Party Dependencies Must Be in the Runtime Image
+Because the container is launched with strict network isolation (`--network=none`):
+- **No runtime package downloads are possible** (`pip install` cannot reach PyPI).
+- Any third-party libraries used by your agent (e.g. `langchain`, `langgraph`, `pydantic`, `requests`, `openai`, `numpy`) **must already be pre-installed in the container image**.
+- Declare your dependencies in `AgentSpec(dependencies=["langgraph>=0.2.0", "pydantic>=2.0"])`.
+- RecoveryBench performs a pre-flight dependency check before invoking your agent. If a required dependency is missing, it fails fast with a clear `MissingDependencyError`.
+- For custom agent dependencies, specify a pre-built custom image in `AgentSpec(runtime_image="my-org/agent-runtime@sha256:...")` or `SandboxConfig(runtime_image=...)`.
+
+### 7.3 Configurable Application Variables (`AgentSpec.env`)
+Agents may declare non-sensitive configuration parameters via `AgentSpec(env={...})`. Examples of permitted configurable variables:
+- `OPENAI_API_BASE` / `MOCK_LLM_URL`: Base URLs for local or mock services.
+- `MODEL_NAME`: Name or checkpoint of the target model.
+- `AGENT_TIMEOUT_SECONDS`: Inner agent timeouts.
+- `RETRY_BUDGET`: Configurable loop iteration caps.
+- `LOG_LEVEL` / `APP_ENV`: Application logging and environment flags.
+
+### 7.4 Reserved Variables Agents Cannot Override
+To preserve container isolation and prevent shared library or loader hijacking, RecoveryBench enforces a strict **Centralized Environment Security Policy**. Agents **cannot** set:
+- **System Path:** `PATH` (the container base image's Linux PATH is strictly preserved; host PATH is never inherited).
+- **Dynamic Linker & Loader Hooks:** `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `LD_DEBUG`, `LD_PROFILE`, `LD_ORIGIN_PATH`, `GCONV_PATH`, `GLIBC_TUNABLES`, and all `LD_*` / `DYLD_*` prefixes.
+- **Python Runtime Redirection:** `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `PYTHONBREAKPOINT`.
+- **Shell Hooks:** `BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `SHELLOPTS`, `BASHOPTS`, `SHELL`, `IFS`.
+- **Process Identity:** `USER`, `USERNAME`, `LOGNAME`, `HOME` (fixed to `nobody:nogroup`).
+- **Internal Harness Indicators:** `RECOVERYBENCH_ISOLATED` (fixed to `1`).
+
+If an `AgentSpec` attempts to configure reserved variables, RecoveryBench filters them with an explicit `[SECURITY ADVISORY]` diagnostic and can be configured to fail closed with `ConfigurationError` when `reject_reserved_env=True` is enabled in `SandboxConfig`.

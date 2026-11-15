@@ -50,13 +50,38 @@ docker run -i \
   --tmpfs=/tmp:rw,noexec,nosuid,size=64m \
   -v <staged_workspace_path>:/workspace:ro \
   -w /workspace \
-  -e PATH=/usr/local/bin:/usr/bin:/bin \
-  -e PYTHONPATH=/workspace \
-  python:3.11-slim \
+  -e PYTHONUNBUFFERED=1 \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e RECOVERYBENCH_ISOLATED=1 \
+  <image@sha256:...> \
   python -u /workspace/_recoverybench_worker.py
 ```
 
-### Prohibited Configuration Directives
+### 3.1 Centralized Environment Variable Policy
+RecoveryBench enforces a strict, centralized environment variable policy in `_build_safe_env()` to prevent container escape, shared library injection, and host variable leakage:
+
+1. **Mandatory Container Variables (Fixed Runtime Contract):**
+   - `PYTHONUNBUFFERED=1`: Ensures unbuffered I/O for deterministic line-framed IPC.
+   - `PYTHONDONTWRITEBYTECODE=1`: Prevents `.pyc` writes into read-only filesystems.
+   - `RECOVERYBENCH_ISOLATED=1`: Informs the isolated worker that sandbox protections are active.
+
+2. **Reserved & Blocked Variables (Cannot be overridden by `AgentSpec.env` or host):**
+   - `PATH`: Locked to the container base image's native Linux PATH (`/usr/local/bin:/usr/bin:/bin`). Overriding PATH is strictly prohibited. Host PATH is never propagated.
+   - `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `LD_DEBUG`, `LD_PROFILE`, `LD_ORIGIN_PATH`, and all `LD_*` / `DYLD_*` prefixes: Dynamically blocked to prevent symbol resolution hijacking or shared library injection.
+   - `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `PYTHONBREAKPOINT`: Blocked to guarantee Python executes against the verified container standard library. The worker script sets `sys.path[0] = "/workspace"` internally.
+   - `BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `SHELLOPTS`, `BASHOPTS`, `SHELL`, `IFS`: Blocked to prevent shell execution hook attacks.
+   - `USER`, `USERNAME`, `LOGNAME`, `HOME`: Blocked to ensure user identity remains fixed to unprivileged `nobody:nogroup`.
+   - `RECOVERYBENCH_*`: Reserved for internal harness indicators.
+
+3. **Safe Host Environment Allowlist:**
+   - Permitted host inheritance is restricted to locale and timezone settings: `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`.
+   - Host `PATH` and host `PYTHONPATH` are strictly blocked from inheritance.
+
+4. **Configurable Application Variables:**
+   - Any valid environment variable identifier (`^[A-Za-z_][A-Za-z0-9_]*$`) not belonging to the reserved list may be supplied via `AgentSpec.env` (e.g. `OPENAI_API_BASE`, `MODEL_NAME`, `AGENT_TIMEOUT_SECONDS`, application-specific feature flags).
+   - If an agent specifies reserved variables, RecoveryBench filters them out with explicit diagnostics (`[SECURITY ADVISORY]`) and can be configured to fail closed with `ConfigurationError` when `reject_reserved_env=True` is enabled in `SandboxConfig`.
+
+### 3.2 Prohibited Configuration Directives
 The following flags are strictly prohibited in the container execution command and will fail harness validation:
 - `--privileged`
 - `--net=host` / `--network=host`

@@ -11,14 +11,24 @@ from recoverybench.sandbox.backend import (
     InProcessExecutionBackend,
     IsolationMode,
 )
-from recoverybench.sandbox.config import SandboxConfig
+from recoverybench.sandbox.config import (
+    BLOCKED_ENV_PREFIXES,
+    BLOCKED_ENV_VARS,
+    MANDATORY_CONTAINER_ENV,
+    SandboxConfig,
+    is_reserved_or_blocked_env,
+)
 from recoverybench.sandbox.spec import AgentSpec
 
 __all__ = [
     "AgentSpec",
+    "BLOCKED_ENV_PREFIXES",
+    "BLOCKED_ENV_VARS",
     "DockerExecutionBackend",
     "ExecutionBackend",
     "InProcessExecutionBackend",
     "IsolationMode",
+    "MANDATORY_CONTAINER_ENV",
     "SandboxConfig",
+    "is_reserved_or_blocked_env",
 ]

@@ -8,6 +8,89 @@ DEFAULT_RUNTIME_IMAGE_DIGEST = (
     "python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535"
 )
 
+# ==============================================================================
+# Centralized Environment Security Policy
+# ==============================================================================
+
+# Variables that must NEVER be overridden or injected by AgentSpec.env or host
+BLOCKED_ENV_VARS: frozenset[str] = frozenset({
+    # System execution path (container image must preserve native system PATH)
+    "PATH",
+    # Dynamic loader & linker hijacking (glibc / musl / bionic)
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_PROFILE",
+    "LD_ORIGIN_PATH",
+    "LD_DYNAMIC_WEAK",
+    "LD_SHOW_AUXV",
+    "LD_BIND_NOW",
+    "LD_AOUT_LIBRARY_PATH",
+    "LD_AOUT_PRELOAD",
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "HOSTALIASES",
+    "RESOLV_HOST_CONF",
+    # Python runtime control
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONUSERBASE",
+    "PYTHONEXECUTABLE",
+    "PYTHONBREAKPOINT",
+    # Shell execution hooks
+    "BASH_ENV",
+    "ENV",
+    "PROMPT_COMMAND",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "SHELL",
+    "IFS",
+    # User / session identity
+    "USER",
+    "USERNAME",
+    "LOGNAME",
+    "HOME",
+    # Internal harness indicators
+    "RECOVERYBENCH_ISOLATED",
+})
+
+# Variable prefixes that are strictly prohibited in container environments
+BLOCKED_ENV_PREFIXES: tuple[str, ...] = (
+    "LD_",
+    "DYLD_",
+    "RECOVERYBENCH_",
+)
+
+# Mandatory runtime environment variables set by RecoveryBench
+MANDATORY_CONTAINER_ENV: dict[str, str] = {
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "RECOVERYBENCH_ISOLATED": "1",
+}
+
+# Safe host environment variables permitted if present in host process
+DEFAULT_HOST_ENV_ALLOWLIST: list[str] = [
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+]
+
+
+def is_reserved_or_blocked_env(name: str) -> bool:
+    """Check whether an environment variable name is reserved, prohibited, or dangerous.
+
+    Evaluates exact match against BLOCKED_ENV_VARS and prefix matches against
+    BLOCKED_ENV_PREFIXES case-insensitively.
+    """
+    clean = name.strip()
+    upper = clean.upper()
+    if upper in BLOCKED_ENV_VARS:
+        return True
+    return any(upper.startswith(prefix) for prefix in BLOCKED_ENV_PREFIXES)
+
 
 class SandboxConfig(BaseModel):
     """Configuration for container execution security and resource limits."""
@@ -61,8 +144,12 @@ class SandboxConfig(BaseModel):
         description="Prevent privilege escalation (--security-opt=no-new-privileges).",
     )
     env_allowlist: list[str] = Field(
-        default_factory=lambda: ["PYTHONPATH", "PYTHONUNBUFFERED", "LANG", "LC_ALL"],
+        default_factory=lambda: list(DEFAULT_HOST_ENV_ALLOWLIST),
         description="Allowlist of host environment variables permitted to pass into container.",
+    )
+    reject_reserved_env: bool = Field(
+        default=False,
+        description="Raise ConfigurationError if AgentSpec.env contains reserved variables, instead of filtering with diagnostics.",
     )
     max_message_bytes: int = Field(
         default=1_048_576,  # 1 MB

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from recoverybench.sandbox.config import SandboxConfig
+from recoverybench.sandbox.config import SandboxConfig, is_reserved_or_blocked_env
 
 
 class DockerClient:
@@ -139,8 +139,10 @@ class DockerClient:
             worker_src = str(worker_script_path.resolve()).replace("\\", "/")
             cmd.extend(["-v", f"{worker_src}:/worker.py:ro"])
 
-        # Pass approved environment variables
+        # Pass approved environment variables (defense-in-depth: exclude any blocked/reserved variables)
         for k, v in effective_env.items():
+            if is_reserved_or_blocked_env(k):
+                continue
             cmd.extend(["-e", f"{k}={v}"])
 
         # Container image and worker entrypoint

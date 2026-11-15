@@ -1,11 +1,15 @@
 """Tests for container configuration, security flags, resource limits, and command generation."""
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
-from recoverybench.sandbox.config import SandboxConfig
+from recoverybench.errors import ConfigurationError
+from recoverybench.sandbox.backend import DockerExecutionBackend
+from recoverybench.sandbox.config import SandboxConfig, is_reserved_or_blocked_env
 from recoverybench.sandbox.docker_client import DockerClient
 from recoverybench.sandbox.spec import AgentSpec
 
@@ -210,3 +214,262 @@ def test_agent_spec_environment_isolation() -> None:
     # Ensure system host secrets are not automatically included in spec.env
     assert "AWS_SECRET_ACCESS_KEY" not in spec.env
     assert "OPENAI_API_KEY" not in spec.env
+
+
+def test_agent_spec_env_cannot_override_path(tmp_path: Path) -> None:
+    """Verify AgentSpec.env cannot override container system PATH in the generated Docker environment."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={"PATH": "/usr/local/malicious/bin:/bin", "SAFE_PARAM": "preserved_value"},
+    )
+
+    safe_env = backend._build_safe_env(spec)
+
+    # 1. Verification in sanitized env dictionary
+    assert "PATH" not in safe_env
+    assert safe_env["SAFE_PARAM"] == "preserved_value"
+
+    # 2. Verification in the actual generated Docker run command
+    cmd = backend.docker_client.build_run_command(
+        container_name="test_sandbox_path",
+        staged_dir=tmp_path,
+        env_vars=safe_env,
+    )
+    assert not any(arg.startswith("PATH=") or arg == "PATH" or arg == "-e PATH=" for arg in cmd)
+    assert any("SAFE_PARAM=preserved_value" in arg for arg in cmd)
+
+    # 3. Diagnostic advisory recorded
+    assert any("PATH" in d for d in backend.last_env_diagnostics)
+
+
+def test_agent_spec_env_cannot_inject_ld_preload(tmp_path: Path) -> None:
+    """Verify AgentSpec.env cannot inject LD_PRELOAD into the generated Docker environment."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={"LD_PRELOAD": "/workspace/malicious_shim.so", "APP_MODE": "eval"},
+    )
+
+    safe_env = backend._build_safe_env(spec)
+
+    assert "LD_PRELOAD" not in safe_env
+    assert safe_env["APP_MODE"] == "eval"
+
+    cmd = backend.docker_client.build_run_command(
+        container_name="test_sandbox_ld_preload",
+        staged_dir=tmp_path,
+        env_vars=safe_env,
+    )
+    assert not any("LD_PRELOAD" in arg for arg in cmd)
+    assert any("APP_MODE=eval" in arg for arg in cmd)
+    assert any("LD_PRELOAD" in d for d in backend.last_env_diagnostics)
+
+
+def test_agent_spec_env_cannot_inject_ld_library_path(tmp_path: Path) -> None:
+    """Verify AgentSpec.env cannot inject LD_LIBRARY_PATH into the generated Docker environment."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={"LD_LIBRARY_PATH": "/workspace/lib_hijack", "CUSTOM_VAR": "valid"},
+    )
+
+    safe_env = backend._build_safe_env(spec)
+
+    assert "LD_LIBRARY_PATH" not in safe_env
+    assert safe_env["CUSTOM_VAR"] == "valid"
+
+    cmd = backend.docker_client.build_run_command(
+        container_name="test_sandbox_ld_lib",
+        staged_dir=tmp_path,
+        env_vars=safe_env,
+    )
+    assert not any("LD_LIBRARY_PATH" in arg for arg in cmd)
+    assert any("CUSTOM_VAR=valid" in arg for arg in cmd)
+    assert any("LD_LIBRARY_PATH" in d for d in backend.last_env_diagnostics)
+
+
+def test_agent_spec_env_cannot_inject_ld_audit(tmp_path: Path) -> None:
+    """Verify AgentSpec.env cannot inject LD_AUDIT into the generated Docker environment."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={"LD_AUDIT": "/workspace/audit_exploit.so"},
+    )
+
+    safe_env = backend._build_safe_env(spec)
+
+    assert "LD_AUDIT" not in safe_env
+
+    cmd = backend.docker_client.build_run_command(
+        container_name="test_sandbox_ld_audit",
+        staged_dir=tmp_path,
+        env_vars=safe_env,
+    )
+    assert not any("LD_AUDIT" in arg for arg in cmd)
+    assert any("LD_AUDIT" in d for d in backend.last_env_diagnostics)
+
+
+def test_agent_spec_env_cannot_inject_loader_and_shell_hooks(tmp_path: Path) -> None:
+    """Verify AgentSpec.env cannot inject runtime loader or shell execution hooks."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={
+            "LD_DEBUG": "all",
+            "PYTHONHOME": "/workspace/fake_stdlib",
+            "PYTHONPATH": "/workspace/fake_site_packages",
+            "BASH_ENV": "/workspace/evil_profile.sh",
+            "ENV": "/workspace/evil_sh.sh",
+            "PROMPT_COMMAND": "malicious_cmd",
+            "SHELL": "/workspace/fake_shell",
+            "IFS": ":",
+            "RECOVERYBENCH_ISOLATED": "0",  # Cannot defeat harness status
+            "VALID_AGENT_FLAG": "true",
+        },
+    )
+
+    safe_env = backend._build_safe_env(spec)
+
+    # Invariants in sanitized environment dictionary
+    for blocked_key in (
+        "LD_DEBUG",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "BASH_ENV",
+        "ENV",
+        "PROMPT_COMMAND",
+        "SHELL",
+        "IFS",
+    ):
+        assert blocked_key not in safe_env
+
+    # Mandatory harness variables cannot be overwritten
+    assert safe_env["RECOVERYBENCH_ISOLATED"] == "1"
+    assert safe_env["VALID_AGENT_FLAG"] == "true"
+
+    cmd = backend.docker_client.build_run_command(
+        container_name="test_sandbox_loader_hooks",
+        staged_dir=tmp_path,
+        env_vars=safe_env,
+    )
+
+    for blocked_key in (
+        "LD_DEBUG",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "BASH_ENV",
+        "ENV",
+        "PROMPT_COMMAND",
+        "SHELL",
+        "IFS",
+    ):
+        assert not any(f"{blocked_key}=" in arg for arg in cmd)
+
+    assert any("VALID_AGENT_FLAG=true" in arg for arg in cmd)
+
+
+def test_docker_rejects_reserved_env_when_configured_fail_closed() -> None:
+    """Verify DockerExecutionBackend raises ConfigurationError when reject_reserved_env is True."""
+    cfg = SandboxConfig(reject_reserved_env=True)
+    backend = DockerExecutionBackend(sandbox_config=cfg)
+
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={"LD_PRELOAD": "/workspace/lib.so", "PATH": "/bad/path"},
+    )
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        backend._build_safe_env(spec)
+
+    err_text = str(exc_info.value)
+    assert "Security violation" in err_text
+    assert "LD_PRELOAD" in err_text
+    assert "PATH" in err_text
+    assert "reserved/blocked" in err_text
+
+
+def test_safe_custom_application_variables_work(tmp_path: Path) -> None:
+    """Verify approved custom application variables are faithfully passed to Docker."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(
+        module_path="agent.py",
+        entrypoint="run",
+        env={
+            "OPENAI_API_BASE": "http://127.0.0.1:8080/v1",
+            "MODEL_NAME": "custom-recovery-v1",
+            "AGENT_TIMEOUT_SECONDS": "15",
+            "RETRY_BUDGET": "3",
+        },
+    )
+
+    safe_env = backend._build_safe_env(spec)
+
+    assert safe_env["OPENAI_API_BASE"] == "http://127.0.0.1:8080/v1"
+    assert safe_env["MODEL_NAME"] == "custom-recovery-v1"
+    assert safe_env["AGENT_TIMEOUT_SECONDS"] == "15"
+    assert safe_env["RETRY_BUDGET"] == "3"
+
+    cmd = backend.docker_client.build_run_command(
+        container_name="test_sandbox_custom_vars",
+        staged_dir=tmp_path,
+        env_vars=safe_env,
+    )
+
+    assert any("OPENAI_API_BASE=http://127.0.0.1:8080/v1" in arg for arg in cmd)
+    assert any("MODEL_NAME=custom-recovery-v1" in arg for arg in cmd)
+    assert any("AGENT_TIMEOUT_SECONDS=15" in arg for arg in cmd)
+    assert any("RETRY_BUDGET=3" in arg for arg in cmd)
+
+
+def test_host_path_is_never_propagated(tmp_path: Path) -> None:
+    """Verify host PATH is never inherited or passed into the container command."""
+    backend = DockerExecutionBackend()
+    spec = AgentSpec(module_path="agent.py", entrypoint="run")
+
+    with patch.dict(os.environ, {"PATH": "C:\\Windows\\System32;C:\\Python311;/usr/bin"}):
+        safe_env = backend._build_safe_env(spec)
+        assert "PATH" not in safe_env
+
+        cmd = backend.docker_client.build_run_command(
+            container_name="test_sandbox_no_host_path",
+            staged_dir=tmp_path,
+            env_vars=safe_env,
+        )
+        assert not any(arg.startswith("PATH=") or arg == "PATH" or arg == "-e PATH=" for arg in cmd)
+
+
+def test_centralized_reserved_env_policy_evaluation() -> None:
+    """Verify is_reserved_or_blocked_env accurately identifies dangerous variables."""
+    # Direct exact matches (case-insensitive)
+    assert is_reserved_or_blocked_env("PATH") is True
+    assert is_reserved_or_blocked_env("path") is True
+    assert is_reserved_or_blocked_env("Path") is True
+    assert is_reserved_or_blocked_env("LD_PRELOAD") is True
+    assert is_reserved_or_blocked_env("ld_preload") is True
+    assert is_reserved_or_blocked_env("LD_LIBRARY_PATH") is True
+    assert is_reserved_or_blocked_env("LD_AUDIT") is True
+    assert is_reserved_or_blocked_env("PYTHONHOME") is True
+    assert is_reserved_or_blocked_env("PYTHONPATH") is True
+    assert is_reserved_or_blocked_env("BASH_ENV") is True
+    assert is_reserved_or_blocked_env("ENV") is True
+    assert is_reserved_or_blocked_env("GCONV_PATH") is True
+    assert is_reserved_or_blocked_env("GLIBC_TUNABLES") is True
+
+    # Prefix matches
+    assert is_reserved_or_blocked_env("LD_UNKNOWN_CUSTOM") is True
+    assert is_reserved_or_blocked_env("DYLD_INSERT_LIBRARIES") is True
+    assert is_reserved_or_blocked_env("RECOVERYBENCH_CUSTOM") is True
+
+    # Safe application variables
+    assert is_reserved_or_blocked_env("OPENAI_API_KEY") is False
+    assert is_reserved_or_blocked_env("API_BASE_URL") is False
+    assert is_reserved_or_blocked_env("AGENT_NAME") is False
+    assert is_reserved_or_blocked_env("TIMEOUT_SECONDS") is False
+    assert is_reserved_or_blocked_env("CUSTOM_PARAM") is False

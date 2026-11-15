@@ -23,7 +23,11 @@ from recoverybench.agent.base import (
     ToolClient,
 )
 from recoverybench.errors import ConfigurationError, InfrastructureError, ToolError
-from recoverybench.sandbox.config import SandboxConfig
+from recoverybench.sandbox.config import (
+    MANDATORY_CONTAINER_ENV,
+    SandboxConfig,
+    is_reserved_or_blocked_env,
+)
 from recoverybench.sandbox.docker_client import DockerClient
 from recoverybench.sandbox.protocol import (
     decode_message,
@@ -132,6 +136,7 @@ class DockerExecutionBackend(ExecutionBackend):
     def __init__(self, sandbox_config: SandboxConfig | None = None) -> None:
         self.config = sandbox_config or SandboxConfig()
         self.docker_client = DockerClient(self.config)
+        self.last_env_diagnostics: list[str] = []
 
     @property
     def mode(self) -> IsolationMode:
@@ -286,26 +291,41 @@ class DockerExecutionBackend(ExecutionBackend):
             WorkspaceStaging.cleanup_workspace(staged_dir)
 
     def _build_safe_env(self, spec: AgentSpec) -> dict[str, str]:
-        """Construct a strictly filtered environment dictionary without host secrets."""
-        safe_env: dict[str, str] = {
-            "PYTHONUNBUFFERED": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "RECOVERYBENCH_ISOLATED": "1",
-        }
+        """Construct a strictly filtered environment dictionary without host secrets or reserved variables."""
+        safe_env: dict[str, str] = dict(MANDATORY_CONTAINER_ENV)
 
-        # Include allowlisted host variables (excluding host PATH which breaks Linux containers)
+        # Include allowlisted host variables (strictly excluding reserved/blocked variables)
         for var_name in self.config.env_allowlist:
-            if var_name == "PATH":
+            if is_reserved_or_blocked_env(var_name):
                 continue
             if var_name in os.environ:
                 val = os.environ[var_name]
-                if os.name == "nt" and (":" in val or "\\" in val) and var_name == "PYTHONPATH":
+                if os.name == "nt" and (":" in val or "\\" in val) and var_name.upper() == "PYTHONPATH":
                     continue
                 safe_env[var_name] = val
 
-        # Include explicit agent-declared variables
+        # Filter or reject explicit agent-declared variables against reserved container policy
+        rejected_vars: list[str] = []
         for k, v in spec.env.items():
+            if is_reserved_or_blocked_env(k):
+                rejected_vars.append(k)
+                continue
             safe_env[k] = v
+
+        if rejected_vars:
+            diag = (
+                f"AgentSpec.env contains reserved/blocked environment variable(s): "
+                f"{', '.join(sorted(rejected_vars))}. "
+                "Overriding container runtime, dynamic loader, or system execution variables "
+                "is prohibited in isolated sandbox mode."
+            )
+            self.last_env_diagnostics.append(diag)
+            if self.config.reject_reserved_env:
+                raise ConfigurationError(f"Security violation: {diag}")
+            sys.stderr.write(
+                f"[SECURITY ADVISORY] Filtered {len(rejected_vars)} reserved variable(s) from AgentSpec.env: {diag}\n"
+            )
+            sys.stderr.flush()
 
         return safe_env
 
