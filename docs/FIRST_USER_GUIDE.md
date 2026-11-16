@@ -18,17 +18,33 @@ Before installing, ensure your environment meets these requirements:
 
 ---
 
-## 2. Clone and Setup
+## 2. Installation Options
 
-### Clone the Repository
+RecoveryBench supports two installation workflows:
 
+### Option A: End-User Installation via PyPI (For Public Releases)
+
+If you are using RecoveryBench to evaluate your own agents:
+
+```bash
+# Core package (Typer CLI, SQLite ledger, generic callables, virtual time)
+python -m pip install recoverybench
+
+# With native LangGraph framework support:
+python -m pip install "recoverybench[langgraph]"
+```
+
+### Option B: Contributor & Development Installation (From Source)
+
+If you are contributing to RecoveryBench or developing custom integrations from source:
+
+#### Clone the Repository
 ```bash
 git clone https://github.com/jenilprajapati777/recoverybench.git
 cd recoverybench
 ```
 
-### Windows (PowerShell)
-
+#### Windows (PowerShell)
 ```powershell
 # 1. Create a virtual environment
 python -m venv .venv
@@ -39,7 +55,7 @@ python -m venv .venv
 # 3. Upgrade packaging tools
 python -m pip install --upgrade pip setuptools wheel
 
-# 4. Install RecoveryBench in editable mode with development dependencies
+# 4. Install in editable mode with development dependencies
 pip install -e ".[dev]"
 ```
 
@@ -49,8 +65,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 .venv\Scripts\Activate.ps1
 ```
 
-### Linux & macOS (bash/zsh)
-
+#### Linux & macOS (bash/zsh)
 ```bash
 # 1. Create a virtual environment
 python3 -m venv .venv
@@ -61,16 +76,28 @@ source .venv/bin/activate
 # 3. Upgrade packaging tools
 python -m pip install --upgrade pip setuptools wheel
 
-# 4. Install RecoveryBench in editable mode with development dependencies
+# 4. Install in editable mode with development dependencies
 pip install -e ".[dev]"
 ```
 
-*(Optional: If you plan to test LangGraph agents, install with: `pip install -e ".[langgraph,dev]"`).*
+*(Optional: If testing LangGraph agents, install with: `pip install -e ".[langgraph,dev]"`).*
 
 ---
 
-## 3. Verify Your Environment (`recoverybench doctor`)
+## 3. Verify Your Environment
 
+### 3.1 Verify Version
+First, confirm the CLI executable and version:
+
+```bash
+recoverybench --version
+```
+Output:
+```text
+RecoveryBench 0.1.0
+```
+
+### 3.2 Run Environment Diagnostics (`recoverybench doctor`)
 Run the built-in diagnostic command to verify your Python runtime, SQLite engine, scenario registry, and Docker availability:
 
 ```bash

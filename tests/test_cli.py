@@ -12,6 +12,24 @@ from recoverybench.errors import ConfigurationError, InfrastructureError
 runner = CliRunner()
 
 
+def test_cli_version() -> None:
+    from recoverybench import __version__
+
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert "RecoveryBench" in result.stdout
+    assert __version__ in result.stdout
+
+
+def test_cli_version_short() -> None:
+    from recoverybench import __version__
+
+    result = runner.invoke(app, ["-v"])
+    assert result.exit_code == 0
+    assert "RecoveryBench" in result.stdout
+    assert __version__ in result.stdout
+
+
 def test_cli_doctor() -> None:
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0

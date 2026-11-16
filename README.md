@@ -131,6 +131,16 @@ RecoveryBench provides **deterministic fault injection**, an **append-only effec
 
 ### 1. Installation
 
+#### Option A: End-User Installation (PyPI Package)
+For production and testing pipelines once published:
+```bash
+python -m pip install recoverybench
+
+# With optional LangGraph framework adapter:
+python -m pip install "recoverybench[langgraph]"
+```
+
+#### Option B: Contributor & Development Installation (From Source)
 ```bash
 # Clone the repository
 git clone https://github.com/jenilprajapati777/recoverybench.git
@@ -145,10 +155,14 @@ pip install -e ".[dev]"
 ### 2. Verify Your Environment
 
 ```bash
+# Verify installed CLI version
+recoverybench --version
+
+# Run diagnostic health check
 recoverybench doctor
 ```
 
-Confirms Python version, SQLite engine, scenario registry, and Docker availability.
+Confirms CLI binary, Python version (>=3.11), SQLite engine, scenario registry, and Docker isolation readiness.
 
 ### 3. Run the Out-of-the-Box Demo
 
@@ -157,6 +171,8 @@ Run the comparative demonstration pitting an unsafe naive retry agent against a 
 ```bash
 recoverybench demo
 ```
+
+*(Note: `recoverybench demo` runs in trusted in-process mode by default for instant local evaluation without Docker. For security-isolated testing inside hardened Linux containers (`--network=none`), use `recoverybench run <scenario> --agent <agent> --isolation isolated`, which requires Docker).*
 
 #### What Happens in the Demo:
 - **Unsafe Naive Agent:** Generates a new idempotency key on retry. Fails with `GENUINE_FAILURE` because it commits **2 charges** (double charge hazard).
