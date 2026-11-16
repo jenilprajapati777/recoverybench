@@ -39,6 +39,8 @@ from recoverybench.sandbox import (
 )
 from recoverybench.sdk.tester import (
     RecoveryBenchTester,
+    resolve_backend,
+    resolve_ledger,
     resolve_scenario,
     test_agent,
 )
@@ -46,6 +48,8 @@ from recoverybench.sdk.tester import (
 __all__ = [
     "test_agent",
     "RecoveryBenchTester",
+    "resolve_backend",
+    "resolve_ledger",
     "resolve_scenario",
     "agent",
     "wrap_agent",

@@ -125,6 +125,13 @@ class InProcessExecutionBackend(ExecutionBackend):
 
         if isinstance(entrypoint, AgentAdapter):
             return entrypoint
+        if isinstance(entrypoint, type) and issubclass(entrypoint, AgentAdapter):
+            try:
+                return entrypoint()
+            except Exception as exc:
+                raise ConfigurationError(
+                    f"Failed to instantiate AgentAdapter class '{spec.entrypoint}': {exc}"
+                ) from exc
         if callable(entrypoint):
             return wrap_agent(entrypoint, agent_id=spec.name)
         raise ConfigurationError(f"Loaded entrypoint '{spec.entrypoint}' is neither an AgentAdapter nor a callable")
