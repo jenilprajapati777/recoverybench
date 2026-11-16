@@ -161,3 +161,65 @@ def test_github_step_summary_generation(tmp_path: Path) -> None:
     assert summary_file.exists()
     content = summary_file.read_text(encoding="utf-8")
     assert "## 🛡️ RecoveryBench Recovery Test Summary" in content
+
+
+def test_publish_workflow_configuration() -> None:
+    """Validate that .github/workflows/publish.yml meets security and release constraints."""
+    import yaml
+
+    workflow_path = Path(".github/workflows/publish.yml")
+    assert workflow_path.exists(), "publish.yml workflow file must exist"
+
+    with open(workflow_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    # 1. Triggers: ONLY release with types: [published]
+    triggers = data.get("on") or data.get(True)
+    assert "workflow_dispatch" not in triggers, "workflow_dispatch must be removed"
+    assert "push" not in triggers, "push trigger must not be present in publish workflow"
+    assert "pull_request" not in triggers, "pull_request trigger must not be present in publish workflow"
+    assert "release" in triggers, "release trigger must be present"
+    assert triggers["release"].get("types") == ["published"], "release trigger must only be ['published']"
+    assert len(triggers) == 1, "The only trigger must be 'release'"
+
+    # 2. Jobs
+    jobs = data.get("jobs", {})
+    assert "build" in jobs, "build job must exist"
+    assert "publish-to-pypi" in jobs, "publish-to-pypi job must exist"
+
+    # 3. Publish job defensive gating
+    publish_job = jobs["publish-to-pypi"]
+    assert "if" in publish_job, "publish-to-pypi job must have an 'if' condition"
+    condition = publish_job["if"]
+    assert "github.event_name == 'release'" in condition, "Condition must check github.event_name == 'release'"
+    assert "github.event.action == 'published'" in condition, "Condition must check github.event.action == 'published'"
+    assert publish_job.get("needs") == ["build"], "publish-to-pypi must depend on build job"
+
+    # 4. OIDC permissions and environment
+    perms = publish_job.get("permissions", {})
+    assert perms.get("id-token") == "write", "id-token: write permission must be configured on publish-to-pypi"
+    env = publish_job.get("environment", {})
+    env_name = env.get("name") if isinstance(env, dict) else env
+    assert env_name == "pypi", "environment must be 'pypi'"
+
+    # 5. Tag/version validation step in build job
+    build_steps = jobs["build"].get("steps", [])
+    step_names = [s.get("name", "") for s in build_steps]
+    tag_validation_steps = [
+        s for s in build_steps
+        if "tag" in s.get("name", "").lower() and "version" in s.get("name", "").lower()
+    ]
+    assert len(tag_validation_steps) == 1, f"Expected 1 tag/version validation step, found: {step_names}"
+    tag_step = tag_validation_steps[0]
+    assert "RELEASE_TAG" in tag_step.get("env", {}), "RELEASE_TAG env var must be passed to validation step"
+    assert "github.event.release.tag_name" in tag_step["env"]["RELEASE_TAG"], (
+        "RELEASE_TAG must reference github.event.release.tag_name"
+    )
+
+    # 6. Action and no static tokens
+    publish_steps = publish_job.get("steps", [])
+    pypi_steps = [s for s in publish_steps if "pypa/gh-action-pypi-publish" in s.get("uses", "")]
+    assert len(pypi_steps) == 1, "Must use pypa/gh-action-pypi-publish"
+    assert "pypa/gh-action-pypi-publish@release/v1" in pypi_steps[0]["uses"]
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert "PYPI_API_TOKEN" not in workflow_text, "Workflow must not reference static PYPI_API_TOKEN"
