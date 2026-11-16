@@ -41,3 +41,6 @@ htmlcov/
 reports/
 pr-reports/
 *.db
+
+# Local recovery credentials
+*recovery-codes*.txt

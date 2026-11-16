@@ -4,7 +4,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from recoverybench.adapters.callable import wrap_agent
 from recoverybench.agent.base import AgentAdapter
 from recoverybench.clock import VirtualClock
 from recoverybench.engine.context import RunResult
@@ -25,6 +24,11 @@ from recoverybench.scenarios.schema import ScenarioModel
 from recoverybench.scenarios.validator import load_scenario
 from recoverybench.tools.base import ToolRegistry
 from recoverybench.tools.payment import MockPaymentService
+
+ISOLATED_ALIASES: frozenset[str] = frozenset({"isolated", "docker", "sandbox"})
+TRUSTED_ALIASES: frozenset[str] = frozenset({"trusted", "in-process", "inprocess", "local"})
+SUPPORTED_ISOLATION_MODES: frozenset[str] = ISOLATED_ALIASES | TRUSTED_ALIASES
+SUPPORTED_LEDGER_TYPES: frozenset[str] = frozenset({"memory", "sqlite"})
 
 
 def resolve_scenario(scenario_input: str | Path | ScenarioModel) -> ScenarioModel:
@@ -51,6 +55,87 @@ def resolve_scenario(scenario_input: str | Path | ScenarioModel) -> ScenarioMode
     )
 
 
+def resolve_ledger(
+    ledger_type: str = "memory",
+    db_path: str | Path | None = None,
+) -> Ledger:
+    """Resolve and validate the effect ledger implementation.
+
+    Args:
+        ledger_type: 'memory' for ephemeral in-memory ledger, 'sqlite' for persistent storage.
+        db_path: Optional SQLite database file path (if ledger_type is 'sqlite').
+
+    Returns:
+        The instantiated Ledger implementation.
+
+    Raises:
+        ConfigurationError: If ledger_type is not supported.
+    """
+    if not isinstance(ledger_type, str):
+        raise ConfigurationError(
+            f"Invalid ledger_type: expected string, got {type(ledger_type).__name__}."
+        )
+
+    clean_ledger = ledger_type.strip().lower()
+    if clean_ledger == "memory":
+        return InMemoryLedger()
+    elif clean_ledger == "sqlite":
+        path = str(db_path) if db_path else ":memory:"
+        return SQLiteLedger(path)
+    else:
+        raise ConfigurationError(
+            f"Invalid ledger_type '{ledger_type}'. Supported ledger types: 'memory', 'sqlite'."
+        )
+
+
+def resolve_backend(
+    isolation: str = "trusted",
+    backend: ExecutionBackend | None = None,
+) -> ExecutionBackend:
+    """Resolve and validate the execution backend based on explicit backend or isolation mode.
+
+    Precedence:
+        If `backend` is explicitly provided, it determines the execution backend.
+        If `isolation` is also provided, it is validated against recognized modes
+        ('isolated', 'docker', 'sandbox', 'trusted', 'in-process', 'inprocess', 'local')
+        to prevent silent misconfigurations, but `backend` takes precedence.
+
+    Args:
+        isolation: Isolation mode string alias ('trusted' or 'isolated').
+        backend: Explicit ExecutionBackend instance.
+
+    Returns:
+        The validated active ExecutionBackend instance.
+
+    Raises:
+        ConfigurationError: If isolation is unknown or backend is of invalid type.
+    """
+    if not isinstance(isolation, str):
+        raise ConfigurationError(
+            f"Invalid isolation parameter: expected string, got {type(isolation).__name__}."
+        )
+
+    clean_iso = isolation.strip().lower()
+    if clean_iso not in SUPPORTED_ISOLATION_MODES:
+        all_modes = sorted(SUPPORTED_ISOLATION_MODES)
+        raise ConfigurationError(
+            f"Invalid isolation mode '{isolation}'. Supported modes: {all_modes}. "
+            "Isolated aliases: ['docker', 'isolated', 'sandbox']. "
+            "Trusted aliases: ['in-process', 'inprocess', 'local', 'trusted']."
+        )
+
+    if backend is not None:
+        if not isinstance(backend, ExecutionBackend):
+            raise ConfigurationError(
+                f"Invalid backend parameter: expected ExecutionBackend instance, got {type(backend).__name__}."
+            )
+        return backend
+
+    if clean_iso in ISOLATED_ALIASES:
+        return DockerExecutionBackend()
+    return InProcessExecutionBackend()
+
+
 def test_agent(
     scenario: str | Path | ScenarioModel,
     agent: AgentAdapter | AgentSpec | Callable[..., Any],
@@ -75,11 +160,14 @@ def test_agent(
         ledger_type: 'memory' for fast ephemeral tests, or 'sqlite' for persistent storage.
         db_path: SQLite database file path (if ledger_type is 'sqlite').
         custom_tools: Custom ToolRegistry; defaults to registry with MockPaymentService.
-        backend: Optional ExecutionBackend instance.
-        isolation: Isolation mode ('trusted' or 'isolated') if backend is not explicitly provided.
+        backend: Optional ExecutionBackend instance. Precedes `isolation` if provided.
+        isolation: Isolation mode ('trusted' or 'isolated'). Defaults to 'trusted' (in-process).
 
     Returns:
         RunResult containing evaluation verdict, assertion outcomes, and cited ledger events.
+
+    Raises:
+        ConfigurationError: If isolation mode, ledger type, or scenario is invalid.
 
     Example:
         >>> from recoverybench.sdk import test_agent
@@ -90,28 +178,14 @@ def test_agent(
     if seed is not None:
         model = model.model_copy(update={"seed": seed})
 
-    # Prepare ledger
-    ledger: Ledger
-    if ledger_type == "sqlite":
-        path = str(db_path) if db_path else ":memory:"
-        ledger = SQLiteLedger(path)
-    else:
-        ledger = InMemoryLedger()
+    ledger = resolve_ledger(ledger_type=ledger_type, db_path=db_path)
 
-    # Prepare tool registry
     tools = custom_tools
     if tools is None:
         tools = ToolRegistry()
         tools.register(MockPaymentService())
 
-    # Resolve backend
-    active_backend = backend
-    if active_backend is None:
-        clean_iso = isolation.strip().lower()
-        if clean_iso in ("isolated", "docker", "sandbox"):
-            active_backend = DockerExecutionBackend()
-        else:
-            active_backend = InProcessExecutionBackend()
+    active_backend = resolve_backend(isolation=isolation, backend=backend)
 
     engine = ExecutionEngine(
         ledger=ledger,
@@ -130,20 +204,33 @@ class RecoveryBenchTester:
     def __init__(
         self,
         *,
+        isolation: str = "trusted",
+        backend: ExecutionBackend | None = None,
         ledger_type: str = "memory",
         db_path: str | Path | None = None,
         custom_tools: ToolRegistry | None = None,
         default_seed: int = 42,
     ) -> None:
+        """Initialize a RecoveryBenchTester evaluation harness.
+
+        Args:
+            isolation: Isolation mode ('trusted' or 'isolated'). Defaults to 'trusted'.
+            backend: Optional ExecutionBackend instance. Precedes `isolation` if provided.
+            ledger_type: 'memory' for fast ephemeral tests, or 'sqlite' for persistent storage.
+            db_path: SQLite database file path (if ledger_type is 'sqlite').
+            custom_tools: Custom ToolRegistry; defaults to registry with MockPaymentService.
+            default_seed: Default deterministic PRNG seed for runs.
+
+        Raises:
+            ConfigurationError: If isolation mode or ledger type is invalid.
+        """
         self.ledger_type = ledger_type
         self.db_path = db_path
         self.default_seed = default_seed
+        self.isolation = isolation
 
-        if ledger_type == "sqlite":
-            path = str(db_path) if db_path else ":memory:"
-            self.ledger: Ledger = SQLiteLedger(path)
-        else:
-            self.ledger = InMemoryLedger()
+        self.ledger: Ledger = resolve_ledger(ledger_type=ledger_type, db_path=db_path)
+        self.backend: ExecutionBackend = resolve_backend(isolation=isolation, backend=backend)
 
         self.tools = custom_tools or ToolRegistry()
         if not self.tools.get("payment_gateway"):
@@ -154,23 +241,35 @@ class RecoveryBenchTester:
             ledger=self.ledger,
             tool_registry=self.tools,
             clock=self.clock,
+            backend=self.backend,
         )
 
     def test(
         self,
         scenario: str | Path | ScenarioModel,
-        agent: AgentAdapter | Callable[..., Any],
+        agent: AgentAdapter | AgentSpec | Callable[..., Any],
         *,
         run_id: str | None = None,
         seed: int | None = None,
     ) -> RunResult:
-        """Execute a recovery test using this tester's ledger and environment."""
+        """Execute a recovery test using this tester's ledger, backend, and environment.
+
+        Supports AgentAdapter instances, declarative AgentSpec objects, or generic callables.
+
+        Args:
+            scenario: Scenario identifier, YAML Path, or ScenarioModel.
+            agent: AgentAdapter instance, AgentSpec, or generic Python callable.
+            run_id: Optional unique identifier for this test run.
+            seed: Deterministic PRNG seed override.
+
+        Returns:
+            RunResult with evaluation verdict, assertion outcomes, and cited ledger events.
+        """
         model = resolve_scenario(scenario)
         target_seed = seed if seed is not None else self.default_seed
         model = model.model_copy(update={"seed": target_seed})
 
-        resolved_agent = agent if isinstance(agent, AgentAdapter) else wrap_agent(agent)
-        return self.engine.run(model, resolved_agent, run_id=run_id)
+        return self.engine.run(model, agent, run_id=run_id, backend=self.backend)
 
     def get_ledger_events(self, run_id: str) -> list[LedgerEvent]:
         """Fetch all recorded effect ledger events for a specific run."""

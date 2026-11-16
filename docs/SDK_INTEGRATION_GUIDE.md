@@ -348,16 +348,25 @@ assert result.passed
 ```python
 def test_agent(
     scenario: str | Path | ScenarioModel,
-    agent: AgentAdapter | Callable[..., Any],
+    agent: AgentAdapter | AgentSpec | Callable[..., Any],
     *,
     run_id: str | None = None,
     seed: int | None = None,
     max_attempts: int | None = None,
-    ledger_type: str = "memory",  # 'memory' or 'sqlite'
+    ledger_type: str = "memory",  # 'memory' (default) or 'sqlite'
     db_path: str | Path | None = None,
     custom_tools: ToolRegistry | None = None,
+    backend: ExecutionBackend | None = None,
+    isolation: str = "trusted",  # 'trusted' (default, in-process) or 'isolated' (Docker container)
 ) -> RunResult:
 ```
+
+#### Execution Mode & Backend Precedence:
+- **Default Execution Mode:** `test_agent()` defaults to `isolation="trusted"`. In trusted mode, the agent runs in-process on the host without network or filesystem isolation, emitting a security advisory. This allows fast, zero-dependency pytest execution.
+- **Isolated Execution:** Passing `isolation="isolated"` (or aliases `"docker"`, `"sandbox"`) runs the agent inside a hardened Docker container with `--network=none`. If Docker is not running or the runtime image is unavailable, execution fails closed with `InfrastructureError` or `ConfigurationError`.
+- **Precedence Rule:** If an explicit `backend: ExecutionBackend` instance is supplied, it takes precedence and is used as the active backend. If `isolation` is also specified, it is validated against supported modes, but `backend` determines execution.
+- **Strict Isolation Validation:** Supported values are normalized for case and whitespace. Any unsupported isolation string immediately raises `ConfigurationError` — RecoveryBench **never** silently falls back from an invalid isolation mode to trusted execution.
+- **Ledger Type Validation:** `ledger_type` must be `"memory"` (ephemeral in-memory ledger) or `"sqlite"` (persistent ledger). Any other value raises `ConfigurationError`.
 
 ### 4.2 `RunResult` Properties
 
@@ -369,6 +378,37 @@ def test_agent(
 - `result.assert_passed()`: Helper method that raises `AssertionError` with detailed failure diagnostics if not passed.
 
 ### 4.3 Using `RecoveryBenchTester` in Pytest
+
+`RecoveryBenchTester` provides a reusable testing harness and context manager for evaluating multiple scenarios within a shared or isolated environment.
+
+#### Class Signature:
+```python
+class RecoveryBenchTester:
+    def __init__(
+        self,
+        *,
+        isolation: str = "trusted",
+        backend: ExecutionBackend | None = None,
+        ledger_type: str = "memory",
+        db_path: str | Path | None = None,
+        custom_tools: ToolRegistry | None = None,
+        default_seed: int = 42,
+    ) -> None: ...
+
+    def test(
+        self,
+        scenario: str | Path | ScenarioModel,
+        agent: AgentAdapter | AgentSpec | Callable[..., Any],
+        *,
+        run_id: str | None = None,
+        seed: int | None = None,
+    ) -> RunResult: ...
+
+    def get_ledger_events(self, run_id: str) -> list[LedgerEvent]: ...
+    def reset(self) -> None: ...
+```
+
+#### Pytest Fixture Example:
 
 ```python
 import pytest
@@ -435,7 +475,10 @@ spec = AgentSpec.from_callable(run_agent)
 ```
 
 ### 6.2 Running Isolated Tests in Python / Pytest
-Specify `isolation="isolated"` (the default and recommended mode) in `test_agent` or `RecoveryBenchTester`:
+
+Both `test_agent()` and `RecoveryBenchTester()` default to `isolation="trusted"` for rapid, dependency-free local testing without requiring Docker Engine.
+
+To enforce containerized network isolation (`--network=none`), explicitly specify `isolation="isolated"` (or aliases `"docker"`, `"sandbox"`):
 
 ```python
 from recoverybench.sdk import test_agent, RecoveryBenchTester
@@ -443,24 +486,49 @@ from recoverybench.sandbox import AgentSpec
 
 spec = AgentSpec.from_file("src/agents/payment.py", entrypoint="process_payment")
 
-# One-liner execution with real container network isolation
+# 1. One-liner test_agent execution with real container network isolation
 result = test_agent("payment_timeout_after_commit", spec, isolation="isolated")
 result.assert_passed()
 
-# Using RecoveryBenchTester in pytest
+# 2. Using RecoveryBenchTester in pytest with container isolation
 def test_isolated_payment_recovery():
     with RecoveryBenchTester(isolation="isolated") as tester:
         res = tester.test("payment_timeout_after_commit", spec)
         res.assert_passed()
 ```
 
-### 6.3 Local Development with `isolation="trusted"`
-If Docker is not installed on the developer workstation (e.g. Windows without Docker Desktop), explicitly pass `isolation="trusted"` to run in-process:
+If Docker is not running or the required immutable runtime image is missing, isolated execution **fails closed** immediately by raising `InfrastructureError` or `ConfigurationError`.
+
+### 6.3 Local Development with `isolation="trusted"` (Default)
+
+In trusted mode (`isolation="trusted"`, the default SDK setting), the agent runs directly in the host Python process. This is ideal for rapid development and debugging when Docker is not installed (e.g. Windows without Docker Desktop):
 
 ```python
-result = test_agent("payment_timeout_after_commit", agent, isolation="trusted")
+# Both invocations run in trusted (in-process) mode:
+result = test_agent("payment_timeout_after_commit", agent)
+result_explicit = test_agent("payment_timeout_after_commit", agent, isolation="trusted")
+
+# Similarly with RecoveryBenchTester:
+with RecoveryBenchTester() as tester:
+    res = tester.test("payment_timeout_after_commit", agent)
+    res.assert_passed()
 ```
-When running in trusted mode, the harness prints a visible warning banner explaining that network access is unconstrained.
+
+> [!WARNING]
+> Running in trusted mode emits an explicit `[SECURITY ADVISORY]` banner to stderr, reminding developers that external network traffic is unconstrained. For security-critical evaluations or testing third-party agents, always run with container isolation (`isolation="isolated"`).
+
+### 6.4 Isolation Modes, Aliases, and Precedence Contract
+
+RecoveryBench adheres to a strict, security-sensitive validation contract for isolation modes:
+
+| Category | Accepted Aliases (Case-Insensitive) | Backend Instantiated | Security Boundary |
+| :--- | :--- | :--- | :--- |
+| **Isolated** | `"isolated"`, `"docker"`, `"sandbox"` | `DockerExecutionBackend` | Operating-system container (`--network=none`, `--read-only`, `nobody:nogroup`, resource capped). |
+| **Trusted** | `"trusted"`, `"in-process"`, `"inprocess"`, `"local"` | `InProcessExecutionBackend` | Host Python process without container isolation. |
+
+- **Strict Validation:** Leading/trailing whitespace and case are normalized (`isolation.strip().lower()`). Any unrecognized value (e.g. `"container"`, `"remote"`, `"unknown"`) immediately raises a `ConfigurationError`. RecoveryBench **never** silently falls back to trusted execution on an invalid isolation string.
+- **Backend Precedence Rule:** When an explicit `backend: ExecutionBackend` instance is passed (e.g., `backend=InProcessExecutionBackend()` or a custom test double), it determines the active execution engine backend. If `isolation` is also specified, it is still validated against recognized aliases to catch configuration typos, but `backend` takes precedence.
+- **AgentSpec Support:** `RecoveryBenchTester.test()` fully supports `AgentSpec` alongside `AgentAdapter` and generic Python callables, passing the spec directly to the active backend without wrapping.
 
 ---
 
