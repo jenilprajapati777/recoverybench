@@ -34,7 +34,14 @@ from recoverybench.sdk.tester import (
     test_agent,
 )
 
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import PackageNotFoundError, version
+
+    __version__ = version("recoverybench")
+except PackageNotFoundError:
+    __version__ = "0.1.0"
+except Exception:
+    __version__ = "0.1.0"
 
 __all__ = [
     "__version__",

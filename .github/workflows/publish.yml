@@ -1,0 +1,99 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Validate Distribution Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Validate Release Tag Matches pyproject.toml Version
+        run: |
+          python -c "
+          import os, sys, tomllib
+
+          tag_name = os.environ.get('RELEASE_TAG', '').strip()
+          if not tag_name:
+              sys.exit('Release tag validation failed: RELEASE_TAG environment variable is empty or missing!')
+
+          normalized_tag = tag_name[1:] if tag_name.startswith('v') else tag_name
+
+          with open('pyproject.toml', 'rb') as f:
+              pyproject = tomllib.load(f)
+
+          pkg_version = pyproject.get('project', {}).get('version', '').strip()
+          if not pkg_version:
+              sys.exit('Release tag validation failed: Could not read project.version from pyproject.toml!')
+
+          print(f'Release tag: \'{tag_name}\' (normalized: \'{normalized_tag}\')')
+          print(f'pyproject.toml version: \'{pkg_version}\'')
+
+          if normalized_tag != pkg_version:
+              sys.exit(
+                  f'Release tag mismatch! Tag \'{tag_name}\' (normalized \'{normalized_tag}\') '
+                  f'does not match pyproject.toml version \'{pkg_version}\'.'
+              )
+
+          print('Release tag matches pyproject.toml version successfully!')
+          "
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+      - name: Install Build and Distribution Validation Tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade build twine
+
+      - name: Build Wheel and Source Distribution
+        run: python -m build
+
+      - name: Validate Package Metadata with Twine Check
+        run: twine check --strict dist/*
+
+      - name: Execute Distribution Smoke Test in Isolated Environment
+        run: python scripts/distribution_smoke_test.py
+
+      - name: Upload Built Package Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 1
+
+  publish-to-pypi:
+    name: Publish to PyPI via Trusted Publishing (OIDC)
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/recoverybench
+    permissions:
+      id-token: write  # MANDATORY for PyPI Trusted Publishing OIDC token exchange
+
+    steps:
+      - name: Download Built Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish Package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          verbose: true

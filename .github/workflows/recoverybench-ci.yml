@@ -6,11 +6,13 @@ on:
       - main
       - master
       - fix/p0-audit-remediation
+      - phase-2/cli-distribution
   pull_request:
     branches:
       - main
       - master
       - fix/p0-audit-remediation
+      - phase-2/cli-distribution
   workflow_dispatch:
     inputs:
       agent:
@@ -174,6 +176,11 @@ jobs:
 
           print('Packaging and licensing verification successful!')
           "
+
+      - name: Execute Clean Wheel-Install Distribution Smoke Test
+        run: |
+          python -m pip install --upgrade build
+          python scripts/distribution_smoke_test.py
 
       - name: Run Unit & Adapter Test Suites
         run: |

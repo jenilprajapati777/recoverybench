@@ -51,6 +51,48 @@ console = Console()
 err_console = Console(stderr=True)
 
 
+def get_version() -> str:
+    """Retrieve the authoritative RecoveryBench version.
+
+    Reads distribution metadata if installed via pip/wheel,
+    falling back to recoverybench.__version__ if metadata is unavailable.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version("recoverybench")
+    except PackageNotFoundError:
+        import recoverybench
+
+        return getattr(recoverybench, "__version__", "0.1.0")
+    except Exception:
+        import recoverybench
+
+        return getattr(recoverybench, "__version__", "0.1.0")
+
+
+def version_callback(value: bool) -> None:
+    """Callback for --version flag."""
+    if value:
+        console.print(f"RecoveryBench {get_version()}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool | None = typer.Option(
+        None,
+        "--version",
+        "-v",
+        help="Show the RecoveryBench version and exit.",
+        callback=version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """RecoveryBench: Local-first AI Agent Recovery Testing Platform."""
+    pass
+
+
 def get_default_engine(db_path: Path | None = None) -> ExecutionEngine:
     """Instantiate execution engine wired with SQLite ledger and default mock tools."""
     settings = get_settings()
@@ -326,7 +368,11 @@ def demo(
         help="Execution isolation mode: 'trusted' (default for in-process demo) or 'isolated' (Docker container)",
     ),
 ) -> None:
-    """Run comparative demonstration: Naive Payment Agent vs. Safe Idempotent Agent."""
+    """Run comparative demonstration: Naive Payment Agent vs. Safe Idempotent Agent.
+
+    Defaults to trusted in-process execution for quick exploration without requiring Docker.
+    Pass '--isolation isolated' to run inside a hardened Docker container.
+    """
     registry = ScenarioRegistry()
     scenario = registry.get("payment_timeout_after_commit")
     if not scenario:
@@ -408,13 +454,17 @@ def demo(
 def run(
     scenario_id: str = typer.Argument(..., help="Scenario ID or path to scenario YAML"),
     agent_name: str = typer.Option("idempotent", "--agent", "-a", help="Agent to run: 'idempotent', 'naive', 'langgraph-idempotent', 'langgraph-naive'"),
-    isolation: str = typer.Option("isolated", "--isolation", "-i", help="Execution isolation mode: 'isolated' (Docker container, recommended) or 'trusted' (in-process)"),
+    isolation: str = typer.Option("isolated", "--isolation", "-i", help="Execution isolation mode: 'isolated' (Docker container, recommended default) or 'trusted' (in-process)"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
     html_output: Path | None = typer.Option(None, "--html", help="Path to save HTML report"),
     junit_output: Path | None = typer.Option(None, "--junit", help="Path to save JUnit XML report"),
     output_dir: Path | None = typer.Option(None, "--output-dir", "-o", help="Directory to save all report artifacts (JSON, HTML, XML)"),
 ) -> None:
-    """Execute a recovery test scenario against an agent."""
+    """Execute a recovery test scenario against an agent.
+
+    Defaults to isolated execution inside a hardened Docker container (--network=none).
+    Pass '--isolation trusted' for rapid development without Docker.
+    """
     # 1. Resolve Scenario
     scenario = None
     path_candidate = Path(scenario_id)
@@ -516,7 +566,11 @@ def suite(
     junit: bool = typer.Option(True, "--junit/--no-junit", help="Generate JUnit XML reports for CI test parsers"),
     json_summary: bool = typer.Option(False, "--json", help="Output summary matrix as JSON"),
 ) -> None:
-    """Execute an entire suite of recovery scenarios in CI/CD or local test runs."""
+    """Execute an entire suite of recovery scenarios in CI/CD or local test runs.
+
+    Defaults to isolated execution inside a hardened Docker container (--network=none).
+    Pass '--isolation trusted' for rapid development without Docker.
+    """
     # 1. Validate and load all scenarios
     try:
         valid_scenarios, validation_errors = ScenarioValidator.validate_directory(scenarios_dir)
