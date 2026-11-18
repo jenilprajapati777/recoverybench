@@ -16,7 +16,7 @@ from recoverybench.agent.naive import NaivePaymentAgent
 from recoverybench.config import get_settings
 from recoverybench.engine.context import RunResult
 from recoverybench.engine.runner import ExecutionEngine
-from recoverybench.errors import ConfigurationError, ScenarioValidationError
+from recoverybench.errors import ConfigurationError, ReportValidationError, ScenarioValidationError
 from recoverybench.evaluator.evaluator import RecoveryEvaluator
 from recoverybench.ledger.sqlite import SQLiteLedger
 from recoverybench.models import EvaluationVerdict
@@ -26,6 +26,7 @@ from recoverybench.reporting.github_summary import append_github_step_summary
 from recoverybench.reporting.html_reporter import HTMLReporter
 from recoverybench.reporting.json_reporter import JSONReporter
 from recoverybench.reporting.junit_reporter import JUnitReporter
+from recoverybench.reporting.schema import ReportValidator
 from recoverybench.sample_project.resources import (
     SAMPLE_CONFIG_YAML,
     SAMPLE_TIMEOUT_AFTER_COMMIT_YAML,
@@ -342,6 +343,26 @@ def validate(
             err_console.print(f"[red bold]Error validating directory:[/red bold] {exc}")
             raise typer.Exit(code=2) from None
 
+    # Check if the JSON file is an execution report rather than a scenario
+    if scenario_path.is_file() and scenario_path.suffix.lower() == ".json":
+        try:
+            raw_content = scenario_path.read_text(encoding="utf-8")
+            data = json.loads(raw_content)
+            if isinstance(data, dict) and "report_schema_version" in data:
+                report_model = ReportValidator.validate_dict(data, source_label=scenario_path.name)
+                console.print(
+                    f"[green]Valid execution report (schema v{report_model.report_schema_version}):[/green] "
+                    f"Run ID '{report_model.run_id}' ({report_model.scenario.id})"
+                )
+                return
+        except json.JSONDecodeError:
+            pass  # Fall through to ScenarioValidator to report JSON syntax error
+        except ReportValidationError as rve:
+            err_console.print(f"[red bold]Report Validation Error:[/red bold] {rve.message}")
+            for err in rve.errors:
+                err_console.print(f"  - {err}")
+            raise typer.Exit(code=2) from None
+
     try:
         scenario = ScenarioValidator.validate_file(scenario_path)
     except ScenarioValidationError as sve:
@@ -357,6 +378,27 @@ def validate(
         raise typer.Exit(code=2) from None
 
     console.print(f"[green]Valid scenario:[/green] '{scenario.name}' ({scenario.scenario_id})")
+
+
+@app.command(name="validate-report")
+def validate_report(
+    report_path: Path = typer.Argument(..., help="Path to execution report JSON to validate"),
+) -> None:
+    """Validate an execution report JSON file against the stable report contract."""
+    try:
+        report_model = ReportValidator.validate_file(report_path)
+        console.print(
+            f"[green bold]✓ Valid execution report (schema v{report_model.report_schema_version}):[/green bold] "
+            f"Run ID '{report_model.run_id}' (scenario: '{report_model.scenario.id}', verdict: {report_model.outcome.verdict})"
+        )
+    except ReportValidationError as rve:
+        err_console.print(f"[red bold]Report Validation Error:[/red bold] {rve.message}")
+        for err in rve.errors:
+            err_console.print(f"  - {err}")
+        raise typer.Exit(code=2) from None
+    except ConfigurationError as ce:
+        err_console.print(f"[red bold]Configuration Error:[/red bold] {ce.message}")
+        raise typer.Exit(code=2) from None
 
 
 @app.command()
@@ -520,7 +562,8 @@ def run(
 
     # 4. Reporting & Output
     if json_output:
-        console.print(JSONReporter.to_json_string(result))
+        sys.stdout.write(JSONReporter.to_json_string(result) + "\n")
+        sys.stdout.flush()
     else:
         render_run_result(result, console)
 
@@ -532,18 +575,27 @@ def run(
         JSONReporter.save_report(result, json_path)
         HTMLReporter.save_report(result, html_path)
         JUnitReporter.save_report(result, junit_path)
-        console.print(f"[green]Reports saved to {output_dir}:[/green]")
-        console.print(f"  - [cyan]{json_path.name}[/cyan]")
-        console.print(f"  - [cyan]{html_path.name}[/cyan]")
-        console.print(f"  - [cyan]{junit_path.name}[/cyan]")
+        if not json_output:
+            console.print(f"[green]Reports saved to {output_dir}:[/green]")
+            console.print(f"  - [cyan]{json_path.name}[/cyan]")
+            console.print(f"  - [cyan]{html_path.name}[/cyan]")
+            console.print(f"  - [cyan]{junit_path.name}[/cyan]")
+        else:
+            err_console.print(f"[dim]Reports saved to {output_dir}[/dim]")
 
     if html_output:
         HTMLReporter.save_report(result, html_output)
-        console.print(f"[green]HTML report saved to {html_output}[/green]")
+        if not json_output:
+            console.print(f"[green]HTML report saved to {html_output}[/green]")
+        else:
+            err_console.print(f"[dim]HTML report saved to {html_output}[/dim]")
 
     if junit_output:
         JUnitReporter.save_report(result, junit_output)
-        console.print(f"[green]JUnit XML report saved to {junit_output}[/green]")
+        if not json_output:
+            console.print(f"[green]JUnit XML report saved to {junit_output}[/green]")
+        else:
+            err_console.print(f"[dim]JUnit XML report saved to {junit_output}[/dim]")
 
     # Append to GitHub Step Summary if running in CI
     append_github_step_summary([result])
@@ -764,14 +816,12 @@ def replay(
 @app.command()
 def report(
     run_id: str = typer.Argument(..., help="Run ID to export reports for"),
-    format: str = typer.Option("all", "--format", "-f", help="Output format: 'json', 'html', 'junit', or 'all'"),
+    format: str | None = typer.Option(None, "--format", "-f", help="Output format: 'json', 'html', 'junit', or 'all'"),
     output_dir: Path | None = typer.Option(None, "--output-dir", "-o", help="Target output directory"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable report JSON directly to stdout"),
 ) -> None:
     """Generate HTML, JSON, and JUnit XML reports for a historical run."""
     settings = get_settings()
-    target_dir = output_dir or settings.reports_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
-
     ledger = SQLiteLedger(settings.db_path)
     summary = ledger.get_run(run_id)
     if not summary:
@@ -809,20 +859,48 @@ def report(
         summary=summary,
     )
 
-    if format in ("json", "both", "all"):
+    if json_output:
+        sys.stdout.write(JSONReporter.to_json_string(run_result) + "\n")
+        sys.stdout.flush()
+        # If output_dir was not explicitly requested, do not touch disk or generate unwanted artifacts
+        if output_dir is None:
+            raise typer.Exit(code=0)
+
+    target_dir = output_dir or settings.reports_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # When --json is specified, default to "json" format only unless an explicit format was passed
+    effective_format: str
+    if format is not None:
+        effective_format = format.lower().strip()
+    elif json_output:
+        effective_format = "json"
+    else:
+        effective_format = "all"
+
+    if effective_format in ("json", "both", "all"):
         json_file = target_dir / f"{run_id}_report.json"
         JSONReporter.save_report(run_result, json_file)
-        console.print(f"[green]Saved JSON report:[/green] {json_file}")
+        if not json_output:
+            console.print(f"[green]Saved JSON report:[/green] {json_file}")
+        else:
+            err_console.print(f"[dim]Saved JSON report: {json_file}[/dim]")
 
-    if format in ("html", "both", "all"):
+    if effective_format in ("html", "both", "all"):
         html_file = target_dir / f"{run_id}_report.html"
         HTMLReporter.save_report(run_result, html_file)
-        console.print(f"[green]Saved HTML report:[/green] {html_file}")
+        if not json_output:
+            console.print(f"[green]Saved HTML report:[/green] {html_file}")
+        else:
+            err_console.print(f"[dim]Saved HTML report: {html_file}[/dim]")
 
-    if format in ("junit", "xml", "all"):
+    if effective_format in ("junit", "xml", "all"):
         junit_file = target_dir / f"{run_id}_report.xml"
         JUnitReporter.save_report(run_result, junit_file)
-        console.print(f"[green]Saved JUnit XML report:[/green] {junit_file}")
+        if not json_output:
+            console.print(f"[green]Saved JUnit XML report:[/green] {junit_file}")
+        else:
+            err_console.print(f"[dim]Saved JUnit XML report: {junit_file}[/dim]")
 
     raise typer.Exit(code=0)
 

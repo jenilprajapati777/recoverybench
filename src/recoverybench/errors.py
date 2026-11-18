@@ -30,6 +30,17 @@ class ScenarioValidationError(RecoveryBenchError):
         super().__init__(full_msg, exit_code=2)
 
 
+class ReportValidationError(RecoveryBenchError):
+    """Raised when an execution report fails schema or semantic validation."""
+
+    def __init__(self, message: str, errors: list[str] | None = None) -> None:
+        self.errors = errors or []
+        full_msg = message
+        if self.errors:
+            full_msg = f"{message}: {'; '.join(self.errors)}"
+        super().__init__(full_msg, exit_code=2)
+
+
 class InfrastructureError(RecoveryBenchError):
     """Raised when a runtime, environment, or system-level failure occurs."""
 
