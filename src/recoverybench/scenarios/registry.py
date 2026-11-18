@@ -5,7 +5,11 @@ from pathlib import Path
 from recoverybench.config import get_settings
 from recoverybench.errors import ConfigurationError
 from recoverybench.faults.types import FaultConfig, FaultType
-from recoverybench.scenarios.schema import ScenarioAssertions, ScenarioModel
+from recoverybench.scenarios.schema import (
+    CURRENT_SCENARIO_SCHEMA_VERSION,
+    ScenarioAssertions,
+    ScenarioModel,
+)
 from recoverybench.scenarios.validator import ScenarioValidator
 
 
@@ -30,6 +34,7 @@ class ScenarioRegistry:
         """Register default built-in reference scenarios."""
         # Scenario 1: Timeout After Commit (Double Charge hazard)
         timeout_after = ScenarioModel(
+            schema_version=CURRENT_SCENARIO_SCHEMA_VERSION,
             scenario_id="payment_timeout_after_commit",
             name="Payment Timeout After Commit (Two Generals' Hazard)",
             description=(
@@ -61,6 +66,7 @@ class ScenarioRegistry:
 
         # Scenario 2: Timeout Before Commit
         timeout_before = ScenarioModel(
+            schema_version=CURRENT_SCENARIO_SCHEMA_VERSION,
             scenario_id="payment_timeout_before_commit",
             name="Payment Timeout Before Commit",
             description=(
@@ -91,6 +97,7 @@ class ScenarioRegistry:
 
         # Scenario 3: HTTP 429 Transient Rate Limit
         rate_limit = ScenarioModel(
+            schema_version=CURRENT_SCENARIO_SCHEMA_VERSION,
             scenario_id="payment_rate_limit_429",
             name="Payment HTTP 429 Rate Limit Recovery",
             description=(
@@ -121,6 +128,7 @@ class ScenarioRegistry:
 
         # Scenario 4: Duplicate Delivery
         duplicate_del = ScenarioModel(
+            schema_version=CURRENT_SCENARIO_SCHEMA_VERSION,
             scenario_id="payment_duplicate_delivery",
             name="Payment Duplicate Request Delivery",
             description=(
@@ -151,6 +159,7 @@ class ScenarioRegistry:
 
         # Scenario 5: HTTP 500 Transient Server Error
         http_500 = ScenarioModel(
+            schema_version=CURRENT_SCENARIO_SCHEMA_VERSION,
             scenario_id="payment_http_500_transient",
             name="Payment HTTP 500 Transient Failure",
             description=(
@@ -180,6 +189,7 @@ class ScenarioRegistry:
 
         # Scenario 6: Malformed Tool Response
         malformed = ScenarioModel(
+            schema_version=CURRENT_SCENARIO_SCHEMA_VERSION,
             scenario_id="payment_malformed_response",
             name="Payment Malformed Tool Response",
             description=(
@@ -209,13 +219,19 @@ class ScenarioRegistry:
         self._scenarios[malformed.scenario_id] = malformed
 
     def load_user_scenarios(self) -> None:
-        """Scan scenarios_dir and load all .yaml and .yml files."""
+        """Scan scenarios_dir and load all .yaml, .yml, and .json files in deterministic order."""
         if not self.scenarios_dir.exists():
             return
 
-        for path in self.scenarios_dir.glob("*.y*ml"):
+        scenario_files = sorted(set(
+            list(self.scenarios_dir.glob("*.yaml"))
+            + list(self.scenarios_dir.glob("*.yml"))
+            + list(self.scenarios_dir.glob("*.json"))
+        ))
+
+        for path in scenario_files:
             try:
-                scenario = ScenarioValidator.validate_yaml_file(path)
+                scenario = ScenarioValidator.validate_file(path)
                 self._scenarios[scenario.scenario_id] = scenario
             except Exception as e:
                 # Log or bubble up error

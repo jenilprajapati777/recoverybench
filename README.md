@@ -312,34 +312,43 @@ RecoveryBench includes 6 deterministic fault injection scenarios:
 
 ---
 
-## Defining Scenarios in YAML
+## Defining Scenarios (YAML & JSON)
 
-Scenarios are declarative YAML files:
+Scenarios are declarative YAML (or JSON) files. Every scenario must specify `schema_version: 1`:
 
 ```yaml
-version: "1.0"
-scenario:
-  id: "payment_timeout_after_commit"
-  name: "Payment Timeout After Commit (Two Generals' Hazard)"
-  description: "Gateway commits charge but response drops; tests duplicate charge prevention."
-  target_tool: "payment_gateway"
-  target_action: "charge"
-  seed: 42
+schema_version: 1
+scenario_id: payment_timeout_after_commit
+name: "Payment Timeout After Commit (Two Generals' Hazard)"
+description: "Gateway commits charge but response drops; tests duplicate charge prevention."
+target_tool: payment_gateway
+target_action: charge
+seed: 42
 
-fault:
-  type: "timeout_after_commit"
-  parameters:
-    fail_attempts: [1]
+faults:
+  - type: timeout_after_commit
+    target_tool: payment_gateway
+    target_action: charge
+    failure_count: 1
     error_message: "Network connection lost after bank transaction processing"
+
+task:
+  amount: 5000
+  currency: USD
+  customer_id: "cust_demo_alice_99"
 
 assertions:
   expected_side_effects: 1
   max_duplicate_effects: 0
-  require_idempotency_key: true
-  idempotency_key_must_be_stable: true
-  max_retries_allowed: 3
-  verify_unknown_outcome_handling: true
+  require_stable_idempotency_key: true
+  max_allowed_retries: 3
+  expect_agent_success: true
 ```
+
+> **Schema Versioning & Compatibility Notice:**
+> - `schema_version: 1` is strictly required. Unversioned scenario files are **not** backward-compatible and will fail validation.
+> - Schema version 1 is supported by all RecoveryBench releases that explicitly maintain support for schema version 1.
+> - The Python SDK `load_scenario("path/to/scenario.(yaml|yml|json)")` entry point dynamically validates and loads both YAML and JSON files.
 
 ---
 

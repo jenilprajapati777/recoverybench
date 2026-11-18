@@ -60,6 +60,7 @@ def tool_registry() -> ToolRegistry:
 def timeout_after_scenario() -> ScenarioModel:
     """Standard scenario testing timeout_after_commit."""
     return ScenarioModel(
+        schema_version=1,
         scenario_id="payment_timeout_after_commit",
         name="Payment Timeout After Commit Test",
         description="Drops response after commit to test idempotency recovery",
@@ -88,6 +89,7 @@ def timeout_after_scenario() -> ScenarioModel:
 def timeout_before_scenario() -> ScenarioModel:
     """Standard scenario testing timeout_before_commit."""
     return ScenarioModel(
+        schema_version=1,
         scenario_id="payment_timeout_before_commit",
         name="Payment Timeout Before Commit Test",
         description="Fails socket connection before server receives request",

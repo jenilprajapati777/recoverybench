@@ -18,6 +18,7 @@ def test_execution_engine_timeout_before_commit() -> None:
     clock = VirtualClock()
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="scen_pre_timeout",
         name="Pre-Commit Timeout",
         description="Fails before commit",
@@ -57,6 +58,7 @@ def test_circuit_breaker_trips_on_excessive_retries() -> None:
 
     # Scenario that never succeeds (failure count 10)
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="scen_infinite_fail",
         name="Infinite Failure",
         description="Always fails to test breaker",
@@ -93,6 +95,7 @@ def test_virtual_clock_zero_wall_sleep() -> None:
     clock = VirtualClock()
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="scen_sleep_test",
         name="Sleep Test",
         description="Verify virtual sleep doesn't block real time",

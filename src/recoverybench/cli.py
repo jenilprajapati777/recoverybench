@@ -311,9 +311,9 @@ def list_scenarios(
 
 @app.command()
 def validate(
-    scenario_path: Path = typer.Argument(Path("scenarios"), help="Path to scenario YAML file or directory to validate"),
+    scenario_path: Path = typer.Argument(Path("scenarios"), help="Path to scenario YAML/JSON file or directory to validate"),
 ) -> None:
-    """Validate a scenario YAML file or an entire directory of scenarios against schema rules."""
+    """Validate a scenario YAML or JSON file or an entire directory of scenarios against schema rules."""
     if scenario_path.is_dir():
         try:
             valid_scenarios, errors = ScenarioValidator.validate_directory(scenario_path)
@@ -343,7 +343,7 @@ def validate(
             raise typer.Exit(code=2) from None
 
     try:
-        scenario = ScenarioValidator.validate_yaml_file(scenario_path)
+        scenario = ScenarioValidator.validate_file(scenario_path)
     except ScenarioValidationError as sve:
         err_console.print(f"[red bold]Scenario Validation Error:[/red bold] {sve.message}")
         for err in sve.errors:
@@ -470,9 +470,11 @@ def run(
     path_candidate = Path(scenario_id)
     if path_candidate.exists():
         try:
-            scenario = ScenarioValidator.validate_yaml_file(path_candidate)
+            scenario = ScenarioValidator.validate_file(path_candidate)
         except ScenarioValidationError as sve:
             err_console.print(f"[red]Validation failed:[/red] {sve.message}")
+            for err in sve.errors:
+                err_console.print(f"  - {err}")
             raise typer.Exit(code=2) from None
     else:
         registry = ScenarioRegistry()
@@ -559,7 +561,7 @@ def run(
 
 @app.command()
 def suite(
-    scenarios_dir: Path = typer.Argument(Path("scenarios"), help="Directory containing scenario YAML files to evaluate"),
+    scenarios_dir: Path = typer.Argument(Path("scenarios"), help="Directory containing scenario YAML/JSON files to evaluate"),
     agent_name: str = typer.Option("idempotent", "--agent", "-a", help="Agent to evaluate: 'idempotent', 'naive', 'langgraph-idempotent', 'langgraph-naive'"),
     isolation: str = typer.Option("isolated", "--isolation", "-i", help="Execution isolation mode: 'isolated' (Docker container) or 'trusted' (in-process)"),
     output_dir: Path = typer.Option(Path("reports"), "--output-dir", "-o", help="Directory to save test artifacts (JSON, HTML, JUnit XML)"),

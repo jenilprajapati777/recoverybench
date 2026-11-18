@@ -21,6 +21,7 @@ def _create_engine() -> ExecutionEngine:
 def test_fault_mode_1_timeout_before_commit() -> None:
     """1. Timeout Before Commit: Nothing committed on attempt 1, retried attempt commits once."""
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_timeout_before",
         name="Timeout Before Commit",
         description="Fails socket connection before commit",
@@ -50,6 +51,7 @@ def test_fault_mode_1_timeout_before_commit() -> None:
 def test_fault_mode_2_timeout_after_commit_unsafe_vs_safe() -> None:
     """2. Timeout After Commit: Unsafe agent duplicates charge; safe agent dedupes via stable key."""
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_timeout_after",
         name="Timeout After Commit",
         description="Drops acknowledgement after server commits charge",
@@ -97,6 +99,7 @@ def test_fault_mode_3_duplicate_delivery_unsafe_vs_safe() -> None:
     - Safe agent (with stable idempotency key) dedupes the delivery, resulting in 1 commit.
     """
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_duplicate_delivery",
         name="Duplicate Delivery",
         description="Simulates redelivery of request",
@@ -140,6 +143,7 @@ def test_fault_mode_3_duplicate_delivery_unsafe_vs_safe() -> None:
 def test_fault_mode_4_http_429_recovery() -> None:
     """4. HTTP 429 Rate Limit: Agent respects retry-after hint, backs off, and succeeds."""
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_rate_limit",
         name="Rate Limit Recovery",
         description="Fails with 429 twice, then succeeds",
@@ -176,6 +180,7 @@ def test_fault_mode_4_http_429_recovery() -> None:
 def test_fault_mode_5_http_500_transient() -> None:
     """5. HTTP 500 Transient Failure: Fails twice with 500, safe agent retries and succeeds."""
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_http_500",
         name="HTTP 500 Transient Failure",
         description="Fails with 500 twice, then succeeds",
@@ -210,6 +215,7 @@ def test_fault_mode_5_http_500_transient() -> None:
 def test_fault_mode_6_malformed_tool_response() -> None:
     """6. Malformed Tool Output: Tool returns corrupted payload, safe agent detects and retries safely."""
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_malformed_response",
         name="Malformed Tool Response",
         description="Returns corrupted payload on attempt 1",

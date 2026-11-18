@@ -126,6 +126,7 @@ RecoveryBench enforces **strict type validation** and never uses Python's `bool(
 In addition to mutating workflows, agents often perform read-only queries or validation checks. You can declare zero-side-effect expectations in scenario YAML:
 
 ```yaml
+schema_version: 1
 scenario_id: balance_inquiry_read_only
 description: Agent performs read-only balance inquiry without modifying ledger state
 target_tool: payment_gateway
@@ -580,3 +581,161 @@ To preserve container isolation and prevent shared library or loader hijacking, 
 - **Internal Harness Indicators:** `RECOVERYBENCH_ISOLATED` (fixed to `1`).
 
 If an `AgentSpec` attempts to configure reserved variables, RecoveryBench filters them with an explicit `[SECURITY ADVISORY]` diagnostic and can be configured to fail closed with `ConfigurationError` when `reject_reserved_env=True` is enabled in `SandboxConfig`.
+
+---
+
+## 8. Scenario Schema Versioning & Specification Contract
+
+Starting in Phase 3B.2, RecoveryBench enforces explicit, deterministic, and independently versioned scenario schemas. Every scenario definition—whether loaded from YAML, loaded from JSON, or constructed directly as a `ScenarioModel` in Python—must declare an explicit `schema_version`.
+
+### 8.1 Schema Version vs. Package Version
+
+The **scenario schema version** is decoupled from the **RecoveryBench package version**:
+- **RecoveryBench Package Version** (e.g. `0.1.0`): Governs the Python package release, SDK APIs, CLI commands, and runtime dependencies.
+- **Scenario Schema Version** (e.g. `1`): Governs the declarative schema format for fault definitions, task parameters, and evaluator assertion rules.
+
+A scenario authored with `schema_version: 1` is supported by all RecoveryBench releases that explicitly maintain support for schema version 1. RecoveryBench does not promise unconditional forward compatibility across arbitrary future major schema revisions; when a future schema version (e.g. version 2) is introduced, the platform's version policy will define the explicit set of supported versions.
+
+### 8.2 Currently Supported Schema Versions
+
+- Current Version: `1` (integer).
+- Supported Versions: `[1]` (`frozenset({1})`).
+- Constants exported by `recoverybench.scenarios`:
+  - `CURRENT_SCENARIO_SCHEMA_VERSION = 1`
+  - `SUPPORTED_SCENARIO_SCHEMA_VERSIONS = frozenset({1})`
+  - `validate_scenario_schema_version(version: Any) -> int`
+
+### 8.3 Supported File Formats & `load_scenario` Entry Point
+
+Scenario files can be authored in either YAML or JSON:
+- **YAML**: `.yaml`, `.yml` (parsed with PyYAML `safe_load`).
+- **JSON**: `.json` (parsed with standard Python `json`).
+
+Both formats share the identical schema definition and semantic validation pipeline. Equivalent YAML and JSON scenario files produce identical `ScenarioModel` instances.
+
+The standard Python programmatic entry point, `load_scenario(path: str | Path)`, remains fully available and actively maintained:
+```python
+from recoverybench.scenarios import load_scenario
+
+# Loads and validates YAML (.yaml, .yml)
+scenario_yaml = load_scenario("scenarios/payment_timeout_after_commit.yaml")
+
+# Loads and validates JSON (.json)
+scenario_json = load_scenario("custom_scenarios/order_flow.json")
+```
+
+`load_scenario` dynamically dispatches by file extension, validating the schema version and all invariants regardless of whether YAML or JSON is used.
+
+### 8.4 Migration Instructions for Existing Scenarios (Breaking Change for Unversioned Files)
+
+> [!IMPORTANT]
+> **Breaking Change for Unversioned Scenarios**: Existing unversioned scenario files are **not** backward-compatible with Phase 3B.2. Any scenario file that lacks `schema_version: 1` will fail validation with `ScenarioValidationError`.
+
+RecoveryBench **does not silently auto-migrate** unversioned scenarios. Custom or legacy scenarios authored without a schema version must be updated by explicitly adding `schema_version: 1` as a top-level field.
+
+#### Example: Migrating an Unversioned Scenario
+
+**Before (Unversioned - Fails Validation):**
+```yaml
+scenario_id: custom_order_cancellation
+name: "Order Cancellation Timeout"
+description: "Tests recovery when cancel request times out"
+target_tool: order_service
+target_action: cancel
+task:
+  order_id: "ord_123"
+assertions:
+  expected_side_effects: 1
+```
+
+**After (Versioned - Passes Validation):**
+```yaml
+schema_version: 1
+scenario_id: custom_order_cancellation
+name: "Order Cancellation Timeout"
+description: "Tests recovery when cancel request times out"
+target_tool: order_service
+target_action: cancel
+task:
+  order_id: "ord_123"
+assertions:
+  expected_side_effects: 1
+```
+
+### 8.5 Example: Versioned YAML and JSON Scenarios
+
+#### Versioned YAML Scenario (`custom_scenario.yaml`):
+```yaml
+schema_version: 1
+scenario_id: payment_timeout_after_commit
+name: "Payment Timeout After Commit (Two Generals' Hazard)"
+description: "Simulates server committing a charge, but client network connection dropping before receiving 200 OK."
+target_tool: payment_gateway
+target_action: charge
+
+faults:
+  - type: timeout_after_commit
+    target_tool: payment_gateway
+    target_action: charge
+    failure_count: 1
+    error_message: "Network dropped connection after server committed charge"
+
+task:
+  amount: 5000
+  currency: USD
+  customer_id: "cust_demo_alice_99"
+
+assertions:
+  expected_side_effects: 1
+  max_duplicate_effects: 0
+  require_stable_idempotency_key: true
+  max_allowed_retries: 3
+  expect_agent_success: true
+```
+
+#### Equivalent Versioned JSON Scenario (`custom_scenario.json`):
+```json
+{
+  "schema_version": 1,
+  "scenario_id": "payment_timeout_after_commit",
+  "name": "Payment Timeout After Commit (Two Generals' Hazard)",
+  "description": "Simulates server committing a charge, but client network connection dropping before receiving 200 OK.",
+  "target_tool": "payment_gateway",
+  "target_action": "charge",
+  "faults": [
+    {
+      "type": "timeout_after_commit",
+      "target_tool": "payment_gateway",
+      "target_action": "charge",
+      "failure_count": 1,
+      "error_message": "Network dropped connection after server committed charge"
+    }
+  ],
+  "task": {
+    "amount": 5000,
+    "currency": "USD",
+    "customer_id": "cust_demo_alice_99"
+  },
+  "assertions": {
+    "expected_side_effects": 1,
+    "max_duplicate_effects": 0,
+    "require_stable_idempotency_key": true,
+    "max_allowed_retries": 3,
+    "expect_agent_success": true
+  }
+}
+```
+
+### 8.6 Strict Failure Behavior for Unsupported Versions
+
+RecoveryBench fails closed when encountering invalid versions:
+
+| Input Condition | Validator Behavior | Error Message Sample |
+| :--- | :--- | :--- |
+| **Missing `schema_version`** | Fails with `ScenarioValidationError` | `[schema_version]: Field required. Missing required field 'schema_version'. Supported versions: [1].` |
+| **Unsupported version (`2`, `0`, `-1`)** | Fails with `ScenarioValidationError` | `[schema_version]: Value error, Unsupported scenario schema_version: 2. Supported versions: [1].` |
+| **Non-integer types (`"1"`, `True`, `1.0`)** | Fails with `ScenarioValidationError` | `[schema_version]: Value error, Invalid schema_version type 'str'. schema_version must be an integer, supported versions: [1].` |
+| **Malformed YAML or JSON** | Fails with `ScenarioValidationError` | `Failed to parse YAML / Failed to parse JSON...` |
+| **Non-object root (list, scalar)** | Fails with `ScenarioValidationError` | `expected dictionary/object, got list` |
+| **Unsupported extension (`.toml`)** | Fails with `ScenarioValidationError` | `Unsupported scenario file format '.toml'. Supported extensions: .json, .yaml, .yml` |
+| **Missing file** | Fails with `ConfigurationError` | `Scenario file not found: ...` |

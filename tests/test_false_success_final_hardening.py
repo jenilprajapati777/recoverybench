@@ -39,6 +39,7 @@ def test_scenario_1_read_only_agent_explicitly_succeeds() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="read_only_query",
         name="Read Only Query",
         description="Read only check that must perform zero mutations",
@@ -81,6 +82,7 @@ def test_scenario_2_zero_expected_side_effects_and_no_actual_effects() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="zero_effects_boolean",
         name="Zero Effects Boolean",
         description="Verify boolean True passes when expected effects is 0",
@@ -111,6 +113,7 @@ def test_scenario_3_positive_expected_effects_but_none_committed() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="positive_expected_zero_committed",
         name="Positive Expected Zero Committed",
         description="Expects 2 mutations but agent commits 0 and claims success",
@@ -143,6 +146,7 @@ def test_scenario_4_unspecified_expected_side_effects() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="unspecified_effects",
         name="Unspecified Effects",
         description="Scenario where expected_side_effects is None",
@@ -170,6 +174,7 @@ def test_scenario_5_unknown_completion_in_zero_effect_scenario() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="zero_effect_unknown",
         name="Zero Effect Unknown",
         description="Verify UNKNOWN completion never gets PASS even with 0 expected effects",
@@ -199,6 +204,7 @@ def test_scenario_6_prohibited_side_effect_in_zero_effect_scenario() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="zero_effect_prohibited_mutation",
         name="Zero Effect Prohibited Mutation",
         description="Expects 0 side effects, but agent mutates state",
@@ -348,6 +354,7 @@ def test_scenario_15_infrastructure_exception_propagation() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="infra_error_test",
         name="Infra Error Test",
         description="Verify infrastructure error classifies as INFRASTRUCTURE_ERROR",
@@ -378,6 +385,7 @@ def test_scenario_16_configuration_exception_propagation() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="config_error_test",
         name="Config Error Test",
         description="Verify requesting unregistered tool produces ConfigurationError classification",
@@ -404,6 +412,7 @@ def test_scenario_17_user_agent_exception_classification() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="user_agent_exc",
         name="User Agent Exception",
         description="User agent crashes with KeyError",
@@ -459,6 +468,7 @@ def test_scenario_19_existing_transaction_identity_tests() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="multi_op_twin_hardening",
         name="Multi Op Twin Hardening",
         description="Verify decoupled transaction identity across identical payloads",
