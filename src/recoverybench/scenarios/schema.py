@@ -2,9 +2,39 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from recoverybench.faults.types import FaultConfig
+
+CURRENT_SCENARIO_SCHEMA_VERSION: int = 1
+SUPPORTED_SCENARIO_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+
+
+def validate_scenario_schema_version(version: Any) -> int:
+    """Validate that schema_version is an exact integer and currently supported.
+
+    Rejects:
+    - Missing/None
+    - Booleans (bool is a subclass of int in Python)
+    - Non-integers (strings, floats, etc.)
+    - Unsupported versions
+    """
+    if version is None:
+        raise ValueError(
+            f"Missing required field 'schema_version'. "
+            f"Supported versions: {sorted(SUPPORTED_SCENARIO_SCHEMA_VERSIONS)}."
+        )
+    if type(version) is not int:
+        raise ValueError(
+            f"Invalid schema_version type '{type(version).__name__}'. "
+            f"schema_version must be an integer, supported versions: {sorted(SUPPORTED_SCENARIO_SCHEMA_VERSIONS)}."
+        )
+    if version not in SUPPORTED_SCENARIO_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"Unsupported scenario schema_version: {version}. "
+            f"Supported versions: {sorted(SUPPORTED_SCENARIO_SCHEMA_VERSIONS)}."
+        )
+    return version
 
 
 class ScenarioAssertions(BaseModel):
@@ -42,6 +72,9 @@ class ScenarioAssertions(BaseModel):
 class ScenarioModel(BaseModel):
     """Declarative definition of a fault injection and recovery scenario."""
 
+    schema_version: int = Field(
+        description=f"Scenario schema specification version. Current version: {CURRENT_SCENARIO_SCHEMA_VERSION}."
+    )
     scenario_id: str = Field(description="Unique snake_case identifier for scenario")
     name: str = Field(description="Human-readable title")
     description: str = Field(description="Detailed narrative of what this scenario tests")
@@ -55,6 +88,11 @@ class ScenarioModel(BaseModel):
         default=None,
         description="Whether this scenario models a single logical business operation (default: True unless expected_side_effects > 1)",
     )
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _validate_schema_version(cls, v: Any) -> int:
+        return validate_scenario_schema_version(v)
 
     @property
     def is_single_operation(self) -> bool:

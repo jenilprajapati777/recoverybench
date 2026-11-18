@@ -451,6 +451,7 @@ def test_case_h_replay_and_reporting_persistence(tmp_path: Path) -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="test_replay_identities",
         name="Test Replay Scenario",
         description="Verify identifier survival in traces",
@@ -568,6 +569,7 @@ def test_case_a_single_operation_declared_default_identity() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="single_op_demo",
         name="Single Operation Demo",
         description="Verify single operation uses declared default identity",
@@ -615,6 +617,7 @@ def test_case_b_multi_operation_five_independent_operations() -> None:
 
     # Multi-operation scenario expecting 5 side effects
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="multi_op_five_orders",
         name="Multi Operation 5 Orders",
         description="Verify 5 distinct operations succeed with distinct operation IDs",
@@ -682,6 +685,7 @@ def test_case_c_multi_operation_identical_payloads_distinct_operation_ids() -> N
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="multi_op_identical_payloads",
         name="Identical Payloads Distinct Ops",
         description="Verify identical request fingerprints do not trigger false duplicates",
@@ -734,6 +738,7 @@ def test_case_d_multi_operation_omitted_operation_id_yields_insufficient_evidenc
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="multi_op_missing_id",
         name="Multi Op Missing Identity",
         description="Verify omitted operation ID produces INSUFFICIENT_EVIDENCE in multi-op scenarios",
@@ -776,6 +781,7 @@ def test_case_e_retry_attempts_preserving_original_operation_id_safe_and_unsafe(
     engine_safe = ExecutionEngine(ledger=ledger_safe, tool_registry=registry_safe)
 
     scenario_safe = ScenarioModel(
+        schema_version=1,
         scenario_id="retry_preserves_id",
         name="Retry Preserves ID",
         description="Verify retries reuse the same operation_id",

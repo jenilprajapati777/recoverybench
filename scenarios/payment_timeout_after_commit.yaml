@@ -1,6 +1,7 @@
 # Scenario: Payment Gateway Timeout After Commit
 # The critical distributed failure: server commits transaction,
 # but network acknowledgement packet is dropped.
+schema_version: 1
 scenario_id: payment_timeout_after_commit
 name: "Payment Timeout After Commit (Double Charge Hazard)"
 description: "Simulates server committing a charge, but client network connection dropping before receiving 200 OK."

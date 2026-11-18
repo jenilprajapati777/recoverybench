@@ -40,6 +40,7 @@ def test_scenario_1_agent_returns_none_before_tool_call() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="none_before_tool",
         name="None Before Tool",
         description="Agent returns None without making any tool calls",
@@ -70,6 +71,7 @@ def test_scenario_2_agent_commits_and_returns_none() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="commit_then_none",
         name="Commit Then None",
         description="Agent commits side-effect then exits returning None",
@@ -157,6 +159,7 @@ def test_scenario_4_agent_explicitly_returns_agent_result_succeeded() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="explicit_agent_result_success",
         name="Explicit Succeeded",
         description="Agent returns AgentResult(success=True)",
@@ -202,6 +205,7 @@ def test_scenario_5_agent_explicitly_returns_agent_result_failed() -> None:
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="expected_failure_scenario",
         name="Expected Failure",
         description="Agent expected to fail cleanly without mutations",
@@ -456,6 +460,7 @@ def test_scenario_15_multi_operation_identity_with_explicit_completion() -> None
     engine = ExecutionEngine(ledger=ledger, tool_registry=registry)
 
     scenario = ScenarioModel(
+        schema_version=1,
         scenario_id="multi_op_explicit_test",
         name="Multi Op Explicit",
         description="Verify multi-op with explicit completion succeeds cleanly",

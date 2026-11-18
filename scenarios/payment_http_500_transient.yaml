@@ -1,4 +1,5 @@
 # Scenario: Payment Transient HTTP 500
+schema_version: 1
 scenario_id: payment_http_500_transient
 name: "Payment Gateway Transient HTTP 500 Server Error"
 description: "Simulates upstream server failure returning HTTP 500 before resolving on retry."

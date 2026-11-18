@@ -1,4 +1,5 @@
 # Scenario: Duplicate Request Delivery
+schema_version: 1
 scenario_id: payment_duplicate_delivery
 name: "Payment Gateway Duplicate Delivery Replay"
 description: "Simulates at-least-once message queue redelivery re-invoking the gateway with identical parameters."

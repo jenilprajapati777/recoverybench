@@ -12,6 +12,7 @@ default_timeout_seconds: 10.0
 SAMPLE_TIMEOUT_AFTER_COMMIT_YAML = """# Scenario: Payment Gateway Timeout After Commit
 # The critical distributed failure: server commits transaction,
 # but network acknowledgement packet is dropped.
+schema_version: 1
 scenario_id: payment_timeout_after_commit
 name: "Payment Timeout After Commit (Double Charge Hazard)"
 description: "Simulates server committing a charge, but client network connection dropping before receiving 200 OK."
@@ -40,6 +41,7 @@ assertions:
 
 SAMPLE_TIMEOUT_BEFORE_COMMIT_YAML = """# Scenario: Payment Gateway Timeout Before Commit
 # Network fails before the server receives or processes the charge.
+schema_version: 1
 scenario_id: payment_timeout_before_commit
 name: "Payment Timeout Before Commit"
 description: "Simulates socket timeout before any transaction commits on the payment gateway."

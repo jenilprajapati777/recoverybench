@@ -1,5 +1,6 @@
 """End-to-end CLI command tests and exit code verification."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,7 @@ def test_cli_list_scenarios_json() -> None:
 def test_cli_validate_success(tmp_path: Path) -> None:
     valid_file = tmp_path / "valid.yaml"
     valid_file.write_text(
+        "schema_version: 1\n"
         "scenario_id: valid_test\n"
         "name: Valid Test\n"
         "description: A valid test scenario\n"
@@ -86,6 +88,82 @@ faults:
     )
     result = runner.invoke(app, ["validate", str(invalid_file)])
     assert result.exit_code == 2
+
+
+def test_cli_validate_json_success(tmp_path: Path) -> None:
+    json_file = tmp_path / "valid.json"
+    json_data = {
+        "schema_version": 1,
+        "scenario_id": "valid_json_cli_test",
+        "name": "Valid JSON CLI Test",
+        "description": "A valid test scenario defined in JSON",
+        "target_tool": "payment_gateway",
+        "target_action": "charge",
+    }
+    json_file.write_text(json.dumps(json_data), encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(json_file)])
+    assert result.exit_code == 0
+    assert "Valid scenario" in result.stdout
+    assert "valid_json_cli_test" in result.stdout
+
+
+def test_cli_run_json_scenario_success(tmp_path: Path) -> None:
+    json_file = tmp_path / "payment_test.json"
+    json_data = {
+        "schema_version": 1,
+        "scenario_id": "json_run_scenario",
+        "name": "JSON Run Scenario",
+        "description": "Tests executing a scenario loaded from a JSON file",
+        "target_tool": "payment_gateway",
+        "target_action": "charge",
+        "faults": [
+            {
+                "type": "timeout_after_commit",
+                "target_tool": "payment_gateway",
+                "target_action": "charge",
+                "failure_count": 1,
+                "error_message": "Network dropped connection after commit",
+            }
+        ],
+        "task": {"amount": 5000, "currency": "USD", "customer_id": "cust_json_1"},
+        "assertions": {
+            "expected_side_effects": 1,
+            "max_duplicate_effects": 0,
+            "require_stable_idempotency_key": True,
+            "max_allowed_retries": 3,
+            "expect_agent_success": True,
+        },
+    }
+    json_file.write_text(json.dumps(json_data), encoding="utf-8")
+    result = runner.invoke(app, ["run", str(json_file), "--agent", "idempotent", "--isolation", "trusted"])
+    assert result.exit_code == 0
+    assert "PASS" in result.stdout
+
+
+def test_cli_validate_json_malformed_error(tmp_path: Path) -> None:
+    malformed_file = tmp_path / "malformed.json"
+    malformed_file.write_text('{"schema_version": 1, "unclosed: }', encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(malformed_file)])
+    assert result.exit_code != 0
+    combined_output = result.output or result.stderr
+    assert "Failed to parse JSON" in combined_output or "Error" in combined_output
+
+
+def test_cli_validate_json_unsupported_version_error(tmp_path: Path) -> None:
+    bad_ver_file = tmp_path / "bad_version.json"
+    bad_data = {
+        "schema_version": 99,
+        "scenario_id": "bad_ver_test",
+        "name": "Bad Version Test",
+        "description": "Tests error output for unsupported schema version",
+        "target_tool": "payment_gateway",
+    }
+    bad_ver_file.write_text(json.dumps(bad_data), encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(bad_ver_file)])
+    assert result.exit_code != 0
+    combined_output = result.output or result.stderr
+    assert "Unsupported scenario schema_version: 99" in combined_output
+    assert "Supported versions: [1]" in combined_output
 
 
 def test_cli_demo() -> None:

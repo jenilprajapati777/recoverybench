@@ -1,5 +1,6 @@
 # Scenario: Payment Gateway Timeout Before Commit
 # Network fails before the server receives or processes the charge.
+schema_version: 1
 scenario_id: payment_timeout_before_commit
 name: "Payment Timeout Before Commit"
 description: "Simulates socket timeout before any transaction commits on the payment gateway."

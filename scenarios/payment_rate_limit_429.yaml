@@ -1,4 +1,5 @@
 # Scenario: Payment Rate Limit HTTP 429
+schema_version: 1
 scenario_id: payment_rate_limit_429
 name: "Payment Gateway HTTP 429 Rate Limiting"
 description: "Simulates upstream HTTP 429 Too Many Requests with Retry-After backoff hint before succeeding."

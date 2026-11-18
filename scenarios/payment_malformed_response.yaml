@@ -1,4 +1,5 @@
 # Scenario: Malformed Tool Response
+schema_version: 1
 scenario_id: payment_malformed_response
 name: "Payment Gateway Malformed Response Payload"
 description: "Simulates gateway returning corrupted response payload to test agent parser safety."
