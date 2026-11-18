@@ -791,7 +791,17 @@ RecoveryBench strictly avoids collapsing test evaluation into a single ambiguous
 Zero duplicate side effects alone does not prove safety if the expected side effect count is missing or if the run aborted before effects were recorded. RecoveryBench classifies side effects into three deterministic states:
 - **`VERIFIED_SAFE`**: Concrete evidence confirms actual committed side effects equal the scenario's authoritative expected side effect count, with zero duplicate side effects.
 - **`UNSAFE`**: Concrete evidence confirms duplicate side effects (`duplicate_count > 0`) or an unexpected number of side effects occurred.
-- **`UNVERIFIED`**: Insufficient evidence exists to establish safety (e.g. expected side effect count was not defined, or execution crashed before recording events).
+- **`UNVERIFIED`**: Insufficient evidence exists to establish safety (e.g. expected side effect count was not defined, execution crashed before recording events, or committed events lack complete identity evidence).
+
+##### Authoritative Classification Priority
+Side-effect safety follows a deterministic priority hierarchy (`determine_side_effect_safety`):
+1. **`duplicate_count > 0` -> `UNSAFE`**: Proven duplicate side-effects take highest precedence over any other evaluation factor, including `INSUFFICIENT_EVIDENCE`.
+2. **Known unexpected count with ledger evidence -> `UNSAFE`**: Discrepancy between actual and expected committed effects results in `UNSAFE`.
+3. **`INSUFFICIENT_EVIDENCE` without proven unsafe effects -> `UNVERIFIED`**: Unresolved evidence fails closed to unverified.
+4. **Infrastructure crash before events were recorded -> `UNVERIFIED`**: Crash before ledger logging cannot verify safety.
+5. **Expected count unspecified (`expected_count is None`) or positive count lacking ledger events -> `UNVERIFIED`**: Open-ended scenarios cannot be verified safe.
+6. **Incomplete committed-event identity evidence (or failed assertion) -> `UNVERIFIED`**: Committed events lacking required `effect_id` or `operation_id` fail closed to unverified.
+7. **Exact expected count with complete evidence and 0 duplicates -> `VERIFIED_SAFE`**: Authoritative proof of mutation safety.
 
 ### 9.3 Detailed Report Sections
 
@@ -805,10 +815,10 @@ Every report contains the following core sections:
 4. **`fault_injection`**: Detailed fault injection audit:
    - `configured_faults`: List of fault configs declared in the scenario.
    - `injected_fault_count`: Total faults actively injected during execution.
-   - `injected_faults`: List of events where `execution_status == "FAULT_INJECTED"`, recording attempt number, tool, action, error class, and timestamp.
+   - `injected_faults`: List of events where `execution_status == "FAULT_INJECTED"`, recording event ID, attempt number, tool, action, error class, commit status (`COMMITTED`, `ABORTED`, `NOT_APPLICABLE`), and timestamp.
 5. **`evaluation`**: Comprehensive assertion outcomes with ledger evidence:
    - `verdict`, `passed`, `isolation_mode`, `duration_ms`, `failure_reasons`, `evidence_summary`, `assertions`.
-6. **`events`**: Full append-only sequence of immutable ledger events, with credentials securely redacted across all fields.
+6. **`events`**: Full append-only sequence of immutable ledger events, with credentials securely redacted across all fields. Strict vocabulary validation enforces `commit_status` in `['COMMITTED', 'ABORTED', 'NOT_APPLICABLE']`. Every `COMMITTED` event must include a non-empty `effect_id` and non-empty `operation_id` for duplicate verification; committed events are never silently excluded from duplicate calculations.
 7. **`errors`**: Unified list of failure reasons, agent errors, and runtime exceptions.
 8. **`metadata`**: Wall-clock execution duration, timestamps, PRNG seed, and total event count.
 

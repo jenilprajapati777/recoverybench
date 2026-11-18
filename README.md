@@ -388,7 +388,7 @@ recoverybench validate-report reports/payment_timeout_after_commit_report.json
 ```
 
 ### Explicit Outcome Dimensions
-Reports clearly distinguish execution success from recovery success and side-effect safety:
+Reports clearly distinguish execution success from recovery success and side-effect safety. Side-effect safety follows a three-state model (`VERIFIED_SAFE`, `UNSAFE`, `UNVERIFIED`) where proven duplicates take strict precedence and incomplete evidence fails closed.
 
 ```json
 {

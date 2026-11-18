@@ -69,8 +69,9 @@ class SideEffectSafety(StrEnum):
 2. **Known unexpected count with ledger evidence -> `UNSAFE`**: When expected count is defined and actual count does not match, proven discrepancy results in `UNSAFE`.
 3. **`INSUFFICIENT_EVIDENCE` without proven unsafe effects -> `UNVERIFIED`**: When evidence is incomplete or missing, safety is classified as unverified.
 4. **Infrastructure crash before events were recorded -> `UNVERIFIED`**: If an infrastructure error aborted execution before ledger events were logged.
-5. **Expected count unspecified (`expected_count is None`) -> `UNVERIFIED`**: In open-ended scenarios where expectations are not defined, safety cannot be verified.
-6. **Exact expected count with sufficient evidence and 0 duplicates -> `VERIFIED_SAFE`**: Only when actual committed effects equal authoritative expected effects, duplicate count is zero, and evidence is complete.
+5. **Expected count unspecified (`expected_count is None`) or positive expected count lacking ledger events -> `UNVERIFIED`**: In open-ended scenarios where expectations are not defined, safety cannot be verified.
+6. **Incomplete committed-event identity evidence (or failed assertion) -> `UNVERIFIED`**: When committed-event identity evidence (such as `effect_id` or `operation_id`) is missing or incomplete, or when the side-effect assertion explicitly failed, safety cannot be verified and fails closed to `UNVERIFIED`.
+7. **Exact expected count with sufficient evidence and 0 duplicates -> `VERIFIED_SAFE`**: Only when actual committed effects equal authoritative expected effects, duplicate count is zero, and evidence is complete.
 
 Boolean `side_effect_safe` is strictly `True` only when `side_effect_safety == SideEffectSafety.VERIFIED_SAFE`.
 
