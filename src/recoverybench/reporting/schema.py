@@ -78,6 +78,10 @@ def determine_side_effect_safety(
     if has_incomplete_identity:
         return SideEffectSafety.UNVERIFIED
 
+    # If side_effect_assertion_passed is explicitly False, cannot be verified safe
+    if side_effect_assertion_passed is False:
+        return SideEffectSafety.UNVERIFIED
+
     # 7. Exact expected count with sufficient evidence and zero duplicates
     return SideEffectSafety.VERIFIED_SAFE
 
@@ -194,6 +198,19 @@ class InjectedFaultReport(StrictReportBaseModel):
     error_type: str | None = Field(default=None, description="Injected error class/type")
     commit_status: str = Field(description="Commit status when fault occurred")
     timestamp: str = Field(description="ISO-8601 timestamp of injection")
+
+    @field_validator("commit_status", mode="before")
+    @classmethod
+    def validate_commit_status(cls, v: Any) -> str:
+        if isinstance(v, CommitStatus):
+            return v.value
+        if isinstance(v, str):
+            if v in SUPPORTED_COMMIT_STATUSES:
+                return v
+            raise ValueError(
+                f"Invalid commit_status '{v}'. Must be one of {sorted(SUPPORTED_COMMIT_STATUSES)}."
+            )
+        raise ValueError(f"Invalid commit_status type '{type(v).__name__}'. Must be string or CommitStatus.")
 
 
 class FaultInjectionReport(StrictReportBaseModel):
@@ -643,23 +660,31 @@ class ReportValidator:
                     )
 
         # Check 4: Duplicate effect IDs and duplicate count consistency derived from ledger events
-        op_to_effects: dict[str, set[str]] = {}
-        for e in committed_events:
-            if e.effect_id and e.effect_id.strip():
-                eff_id = e.effect_id.strip()
-                op_id = e.operation_id.strip() if e.operation_id and e.operation_id.strip() else ""
-                if op_id:
+        if missing_op_committed:
+            errors.append(
+                f"Cannot establish complete duplicate verification evidence: "
+                f"{len(missing_op_committed)} COMMITTED event(s) lack operation_id "
+                f"(Event IDs: {[e.event_id for e in missing_op_committed]}). "
+                "Committed events must not be silently excluded from duplicate calculations."
+            )
+        else:
+            op_to_effects: dict[str, set[str]] = {}
+            for e in committed_events:
+                if e.effect_id and e.effect_id.strip():
+                    eff_id = e.effect_id.strip()
+                    assert e.operation_id is not None
+                    op_id = e.operation_id.strip()
                     op_to_effects.setdefault(op_id, set()).add(eff_id)
 
-        derived_duplicate_count = sum(
-            len(effs) - 1 for effs in op_to_effects.values() if len(effs) > 1
-        )
-
-        if model.side_effects.duplicate_count != derived_duplicate_count:
-            errors.append(
-                f"side_effects.duplicate_count ({model.side_effects.duplicate_count}) conflicts with "
-                f"duplicate count ({derived_duplicate_count}) derived from ledger events."
+            derived_duplicate_count = sum(
+                len(effs) - 1 for effs in op_to_effects.values() if len(effs) > 1
             )
+
+            if model.side_effects.duplicate_count != derived_duplicate_count:
+                errors.append(
+                    f"side_effects.duplicate_count ({model.side_effects.duplicate_count}) conflicts with "
+                    f"duplicate count ({derived_duplicate_count}) derived from ledger events."
+                )
 
         if errors:
             raise ReportValidationError(

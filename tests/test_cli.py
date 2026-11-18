@@ -317,14 +317,24 @@ def test_cli_report_json_stdout_without_output_dir_creates_no_files(tmp_path: Pa
 
     report_res = runner.invoke(app, ["report", "demo_safe_agent_run", "--json"])
     assert report_res.exit_code == 0
-    # Must be 100% valid JSON on stdout
-    data = json.loads(report_res.stdout)
+    # Must be 100% valid parseable JSON on stdout with no surrounding text or pollution
+    raw_stdout = report_res.stdout.strip()
+    assert raw_stdout.startswith("{") and raw_stdout.endswith("}")
+    data = json.loads(raw_stdout)
     assert data["run_id"] == "demo_safe_agent_run"
     assert data["report_schema_version"] == 1
     assert data["outcome"]["verdict"] == "PASS"
 
+    # Must pass strict ReportValidator schema validation
+    from recoverybench.reporting.schema import ReportValidator
+    ReportValidator.validate_dict(data)
+
     # Verify no report files or directories were created on disk
     assert not isolated_reports_dir.exists()
+    assert list(tmp_path.glob("*demo_safe_agent_run*")) == []
+    assert list(Path(".").glob("*demo_safe_agent_run*.json")) == []
+    assert list(Path(".").glob("*demo_safe_agent_run*.html")) == []
+    assert list(Path(".").glob("*demo_safe_agent_run*.xml")) == []
 
 
 def test_cli_report_json_stdout_with_output_dir_saves_json_only(tmp_path: Path) -> None:

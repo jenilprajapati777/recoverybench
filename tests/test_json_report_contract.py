@@ -26,6 +26,7 @@ from recoverybench.errors import (
 )
 from recoverybench.ledger.memory import InMemoryLedger
 from recoverybench.models import (
+    CommitStatus,
     EvaluationResult,
     EvaluationVerdict,
     RunSummary,
@@ -36,6 +37,7 @@ from recoverybench.reporting.json_reporter import (
 )
 from recoverybench.reporting.schema import (
     SUPPORTED_REPORT_SCHEMA_VERSIONS,
+    InjectedFaultReport,
     ReportValidator,
     SideEffectSafety,
 )
@@ -1362,3 +1364,220 @@ def test_valid_behavior_legitimate_duplicate_commit_failure(
     assert model.side_effects.actual_count == 2
     assert model.side_effects.duplicate_count == 1
     assert len(model.side_effects.committed_effect_ids) == 2
+
+
+# =============================================================================
+# 11. INJECTED FAULT REPORT STRICT COMMIT STATUS VALIDATION (Finding 1)
+# =============================================================================
+
+
+def test_injected_fault_report_accepts_valid_commit_statuses() -> None:
+    """InjectedFaultReport accepts all valid commit statuses as str and CommitStatus enum."""
+    for valid_status in ["COMMITTED", "ABORTED", "NOT_APPLICABLE"]:
+        report = InjectedFaultReport(
+            attempt_number=1,
+            tool_name="payment_service",
+            action_type="charge",
+            commit_status=valid_status,
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        assert report.commit_status == valid_status
+
+    for enum_status in [CommitStatus.COMMITTED, CommitStatus.ABORTED, CommitStatus.NOT_APPLICABLE]:
+        report = InjectedFaultReport(
+            attempt_number=1,
+            tool_name="payment_service",
+            action_type="charge",
+            commit_status=enum_status,
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        assert report.commit_status == enum_status.value
+
+
+def test_injected_fault_report_rejects_unknown_commit_status() -> None:
+    """InjectedFaultReport rejects unknown commit status values outside the vocabulary."""
+    for unknown_status in ["UNKNOWN", "PENDING", "ROLLED_BACK", "UNCOMMITTED", "INVALID", ""]:
+        with pytest.raises(ValueError) as exc:
+            InjectedFaultReport(
+                attempt_number=1,
+                tool_name="payment_service",
+                action_type="charge",
+                commit_status=unknown_status,
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        assert "Invalid commit_status" in str(exc.value)
+        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE']" in str(exc.value)
+
+
+def test_injected_fault_report_rejects_invalid_commit_status_types() -> None:
+    """InjectedFaultReport rejects invalid types for commit_status (int, bool, list, dict, None)."""
+    for invalid_val in [123, True, False, None, ["COMMITTED"], {"status": "COMMITTED"}]:
+        with pytest.raises(ValueError) as exc:
+            InjectedFaultReport(
+                attempt_number=1,
+                tool_name="payment_service",
+                action_type="charge",
+                commit_status=invalid_val,  # type: ignore[arg-type]
+                timestamp="2026-01-01T00:00:00Z",
+            )
+        assert "Invalid commit_status" in str(exc.value) or "Input should be a valid string" in str(exc.value)
+
+
+def test_report_validator_rejects_injected_fault_with_unknown_commit_status(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """ReportValidator rejects execution reports containing injected faults with unknown commit_status."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+    result = engine.run(timeout_after_scenario, IdempotentPaymentAgent())
+    tampered = result.to_report_dict()
+
+    assert len(tampered["fault_injection"]["injected_faults"]) > 0
+
+    for bad_status in ["UNKNOWN", "PENDING", "ROLLED_BACK"]:
+        bad_dict = json.loads(json.dumps(tampered))
+        bad_dict["fault_injection"]["injected_faults"][0]["commit_status"] = bad_status
+
+        with pytest.raises(ReportValidationError) as exc:
+            ReportValidator.validate_dict(bad_dict)
+        assert "Invalid commit_status" in str(exc.value)
+        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE']" in str(exc.value)
+
+
+# =============================================================================
+# 12. COMPLETE DUPLICATE VERIFICATION EVIDENCE (Finding 2)
+# =============================================================================
+
+
+def test_adversarial_multiple_committed_events_missing_all_operation_ids(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """Adversarial check: Multiple COMMITTED events missing operation_id cannot be silently excluded to claim 0 duplicates."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+    result = engine.run(timeout_after_scenario, NaivePaymentAgent())
+    tampered = result.to_report_dict()
+
+    # Naive agent creates 2 committed events. Strip operation_id from both!
+    for ev in tampered["events"]:
+        if ev["commit_status"] == "COMMITTED":
+            ev["operation_id"] = None
+
+    # Adversarial tampering: claim 0 duplicates and unverified safety
+    tampered["side_effects"]["duplicate_count"] = 0
+    tampered["evaluation"]["duplicate_effect_count"] = 0
+    tampered["side_effects"]["safety_status"] = "UNVERIFIED"
+    tampered["side_effects"]["safe"] = False
+    tampered["outcome"]["side_effect_safety"] = "UNVERIFIED"
+    tampered["outcome"]["side_effect_safe"] = False
+
+    with pytest.raises(ReportValidationError) as exc:
+        ReportValidator.validate_dict(tampered)
+
+    err_str = str(exc.value)
+    assert (
+        "Cannot establish complete duplicate verification evidence" in err_str
+        or "has missing or empty operation_id when duplicate verification requires it" in err_str
+    )
+    assert "Committed events must not be silently excluded from duplicate calculations." in err_str
+
+
+def test_adversarial_multiple_committed_events_partially_missing_operation_ids(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """Adversarial check: If some committed events have operation_id and others do not, duplicate verification fails closed."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+    result = engine.run(timeout_after_scenario, NaivePaymentAgent())
+    tampered = result.to_report_dict()
+
+    # Keep operation_id on event 1, strip from event 2
+    committed = [e for e in tampered["events"] if e["commit_status"] == "COMMITTED"]
+    assert len(committed) == 2
+    committed[0]["operation_id"] = "op_first_charge"
+    committed[1]["operation_id"] = None
+
+    tampered["side_effects"]["duplicate_count"] = 0
+    tampered["evaluation"]["duplicate_effect_count"] = 0
+    tampered["side_effects"]["safety_status"] = "UNVERIFIED"
+    tampered["side_effects"]["safe"] = False
+    tampered["outcome"]["side_effect_safety"] = "UNVERIFIED"
+    tampered["outcome"]["side_effect_safe"] = False
+
+    with pytest.raises(ReportValidationError) as exc:
+        ReportValidator.validate_dict(tampered)
+
+    err_str = str(exc.value)
+    assert "Cannot establish complete duplicate verification evidence" in err_str
+    assert "Committed events must not be silently excluded from duplicate calculations." in err_str
+
+
+def test_valid_multiple_committed_events_distinct_operation_ids(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """Preserve valid behavior: Multiple distinct operations commit independently with 0 duplicates -> VERIFIED_SAFE."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+    result = engine.run(timeout_after_scenario, NaivePaymentAgent())
+    report_dict = result.to_report_dict()
+
+    # Update scenario to multi-operation with 2 expected effects
+    report_dict["scenario"]["is_single_operation"] = False
+    report_dict["scenario"]["id"] = "multi_order_scenario"
+    report_dict["scenario"]["name"] = "Multi-order Processing"
+
+    # Give each committed event its own distinct operation_id and unique effect_id
+    committed_count = 0
+    committed_ids = []
+    for ev in report_dict["events"]:
+        if ev["commit_status"] == "COMMITTED":
+            committed_count += 1
+            op_id = f"op_order_{committed_count}"
+            eff_id = f"eff_order_{committed_count}"
+            ev["operation_id"] = op_id
+            ev["effect_id"] = eff_id
+            committed_ids.append(eff_id)
+
+    assert committed_count == 2
+
+    # Set up valid multi-operation pass report
+    report_dict["side_effects"]["expected_count"] = 2
+    report_dict["side_effects"]["actual_count"] = 2
+    report_dict["side_effects"]["duplicate_count"] = 0
+    report_dict["side_effects"]["safety_status"] = "VERIFIED_SAFE"
+    report_dict["side_effects"]["safe"] = True
+    report_dict["side_effects"]["committed_effect_ids"] = committed_ids
+
+    report_dict["outcome"]["verdict"] = "PASS"
+    report_dict["outcome"]["execution_success"] = True
+    report_dict["outcome"]["recovery_success"] = True
+    report_dict["outcome"]["side_effect_safety"] = "VERIFIED_SAFE"
+    report_dict["outcome"]["side_effect_safe"] = True
+
+    report_dict["evaluation"]["verdict"] = "PASS"
+    report_dict["evaluation"]["passed"] = True
+    report_dict["evaluation"]["expected_side_effects"] = 2
+    report_dict["evaluation"]["actual_side_effects"] = 2
+    report_dict["evaluation"]["duplicate_effect_count"] = 0
+    report_dict["evaluation"]["failure_reasons"] = []
+    for a in report_dict["evaluation"]["assertions"]:
+        a["passed"] = True
+        if a["name"] == "side_effect_count":
+            a["expected"] = 2
+            a["actual"] = 2
+            a["message"] = "Expected side-effects matched."
+
+    # Validate dict through ReportValidator: must pass cleanly!
+    validated_model = ReportValidator.validate_dict(report_dict)
+    assert validated_model.outcome.verdict == "PASS"
+    assert validated_model.side_effects.duplicate_count == 0
+    assert validated_model.side_effects.safety_status == SideEffectSafety.VERIFIED_SAFE
+    assert validated_model.side_effects.actual_count == 2

@@ -17,17 +17,17 @@ Following final contract hardening and ledger evidence verification reviews, cri
 2. Guaranteed that known evidence of duplicate effects and unexpected counts takes strict precedence over insufficient evidence.
 3. Enforced bidirectional safety validation ensuring that `ReportValidator` and `JSONReporter` adhere to identical, non-contradictory safety rules via a shared pure helper (`determine_side_effect_safety`).
 4. Enforced ledger integrity and commit-status vocabulary validation:
-   - `EventReport.commit_status` strictly validates against the `CommitStatus` enum (`COMMITTED`, `ABORTED`, `NOT_APPLICABLE`). Unknown status values fail closed immediately.
+   - Both `EventReport.commit_status` and `InjectedFaultReport.commit_status` strictly validate against the `CommitStatus` enum (`COMMITTED`, `ABORTED`, `NOT_APPLICABLE`). Unknown status values fail closed immediately.
    - `COMMITTED` events must have a non-empty `effect_id`.
    - `COMMITTED` events must have a non-empty `operation_id` when duplicate verification requires it (multiple events, retries, multi-operation, or passing/clean verdicts).
    - Whitespace-only identifiers are rejected across all string identifier fields (`effect_id`, `operation_id`, `attempt_id`, `tool_name`, `action_type`, `request_fingerprint`).
    - Missing identity evidence fails closed and never allows a report to be classified as `VERIFIED_SAFE`.
-5. Enforced ledger evidence consistency checks:
+5. Enforced ledger evidence consistency checks and complete duplicate accounting:
    - Verified `side_effects.actual_count` against the count of unique committed effect IDs derived strictly from ledger events with `commit_status == "COMMITTED"`.
    - Verified `side_effects.committed_effect_ids` against committed effect IDs derived strictly from ledger events with `commit_status == "COMMITTED"`.
-   - Verified duplicate count consistency against ledger events grouped by `operation_id`, rejecting reports attempting to hide duplicates by tampering with `duplicate_count`.
+   - Verified complete duplicate verification evidence: every `COMMITTED` event is accounted for in duplicate calculations, and committed events with missing or whitespace-only `operation_id` are never silently excluded.
    - Enforced commit status consistency: confirmed that non-committed events (`NOT_APPLICABLE`, `ABORTED`) cannot falsely establish successful side effects.
-6. Made CLI `report <run_id> --json` behavior unambiguous: defaults to JSON-only output on disk when `--output-dir` is provided, preventing automatic HTML/JUnit generation unless explicitly requested via `--format`.
+6. Made CLI `report <run_id> --json` behavior unambiguous: streams pure JSON directly to stdout and creates zero report files on disk when `--output-dir` is omitted; defaults to JSON-only output on disk when `--output-dir` is provided, preventing automatic HTML/JUnit generation unless explicitly requested via `--format`.
 7. Universal sensitive-data redaction across every serialization and validation entry point.
 
 ---
@@ -93,12 +93,13 @@ Boolean `side_effect_safe` is strictly `True` only when `side_effect_safety == S
 
 ### 2.5 Ledger Integrity & Committed Event Identity
 
-`EventReport` and `ReportValidator` enforce strict ledger integrity and identity completeness:
-1. **Commit Status Vocabulary**: `EventReport.commit_status` strictly validates against `CommitStatus` (`COMMITTED`, `ABORTED`, `NOT_APPLICABLE`). Unknown statuses fail validation closed immediately.
+`EventReport`, `InjectedFaultReport`, and `ReportValidator` enforce strict ledger integrity and identity completeness:
+1. **Commit Status Vocabulary**: Both `EventReport.commit_status` and `InjectedFaultReport.commit_status` strictly validate against `CommitStatus` (`COMMITTED`, `ABORTED`, `NOT_APPLICABLE`). Unknown statuses fail validation closed immediately.
 2. **Committed Mutation Proof**: Every `COMMITTED` event must have a non-empty `effect_id`.
 3. **Operation Identity for Duplicate Relationships**: A `COMMITTED` event must have a non-empty `operation_id` whenever duplicate verification requires it (multiple events, retries, multi-operation, or passing/clean verdicts).
-4. **No Whitespace-Only Identifiers**: All string identifiers are validated to prohibit empty or whitespace-only strings.
-5. **Fail-Closed on Incomplete Evidence**: Missing identity evidence fails closed and never allows a report to be classified as `VERIFIED_SAFE`. Legitimate idempotent retries (`COMMITTED` followed by `NOT_APPLICABLE`) and duplicate commit failures remain fully supported.
+4. **Complete Duplicate Verification Accounting**: Every `COMMITTED` event is accounted for during duplicate calculations. Committed events with missing or whitespace-only `operation_id` are never silently excluded via filter bypasses.
+5. **No Whitespace-Only Identifiers**: All string identifiers are validated to prohibit empty or whitespace-only strings.
+6. **Fail-Closed on Incomplete Evidence**: Missing identity evidence fails closed and never allows a report to be classified as `VERIFIED_SAFE`. Legitimate idempotent retries (`COMMITTED` followed by `NOT_APPLICABLE`), independent multi-operation commits, and duplicate commit failures remain fully supported.
 
 ---
 
@@ -339,13 +340,13 @@ Boolean `side_effect_safe` is strictly `True` only when `side_effect_safety == S
 
 All tests were executed against `D:\RecoveryBench` using the local virtual environment (`.venv`, Python 3.13.8).
 
-### 5.1 Report Contract Tests (49 tests)
+### 5.1 Report Contract Tests (56 tests)
 ```bash
 .venv\Scripts\pytest.exe tests/test_json_report_contract.py -v
 ```
 **Result:**
 ```
-============================= 49 passed in 0.54s ==============================
+============================= 56 passed in 0.55s ==============================
 ```
 
 ### 5.2 Existing Reporting Tests (3 tests)
@@ -363,26 +364,26 @@ All tests were executed against `D:\RecoveryBench` using the local virtual envir
 ```
 **Result:**
 ```
-======================== 29 passed, 1 skipped in 2.65s ========================
+======================== 29 passed, 1 skipped in 3.95s ========================
 ```
 *(1 skipped test requires Docker daemon to be unavailable on host to verify fail-closed behavior).*
 
-### 5.4 Combined Contract & CLI Tests (79 tests)
+### 5.4 Combined Contract & CLI Tests (86 tests)
 ```bash
 .venv\Scripts\pytest.exe tests/test_json_report_contract.py tests/test_cli.py -v
 ```
 **Result:**
 ```
-======================== 78 passed, 1 skipped in 3.52s ========================
+======================== 85 passed, 1 skipped in 4.45s ========================
 ```
 
-### 5.5 Full Pytest Suite (323 tests)
+### 5.5 Full Pytest Suite (330 tests)
 ```bash
 .venv\Scripts\pytest.exe -q
 ```
 **Result:**
 ```
-======================= 321 passed, 2 skipped in 43.75s =======================
+======================= 328 passed, 2 skipped in 38.90s =======================
 ```
 *(2 skipped tests are container lifecycle integration checks that require specific environment preconditions).*
 
@@ -409,6 +410,12 @@ Success: no issues found in 81 source files
 git diff --check
 ```
 **Result:** Clean (0 errors).
+
+### 5.9 Package Build Verification
+```bash
+python -m build
+```
+**Result:** Successfully built `recoverybench-0.1.0.tar.gz` and `recoverybench-0.1.0-py3-none-any.whl`.
 
 ---
 
