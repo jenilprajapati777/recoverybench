@@ -257,3 +257,175 @@ def test_cli_run_default_isolated_fails_closed_when_docker_unavailable() -> None
     result = runner.invoke(app, ["run", "payment_timeout_after_commit", "--agent", "idempotent"])
     assert result.exit_code == 3
     assert "INFRASTRUCTURE_ERROR" in result.stdout
+
+
+def test_cli_run_json_output_pass() -> None:
+    """Verify that 'run --json' produces 100% valid, machine-readable JSON on stdout for a passing run."""
+    result = runner.invoke(app, ["run", "payment_timeout_after_commit", "--agent", "idempotent", "--isolation", "trusted", "--json"])
+    assert result.exit_code == 0
+    # Must be valid pure JSON on stdout
+    data = json.loads(result.stdout)
+    assert data["report_schema_version"] == 1
+    assert data["recoverybench_version"] == "0.1.0"
+    assert data["outcome"]["verdict"] == "PASS"
+    assert data["outcome"]["execution_success"] is True
+    assert data["outcome"]["recovery_success"] is True
+    assert data["outcome"]["side_effect_safe"] is True
+    assert data["side_effects"]["actual_count"] == 1
+    assert data["side_effects"]["duplicate_count"] == 0
+
+
+def test_cli_run_json_output_fail() -> None:
+    """Verify that 'run --json' produces valid JSON with exit code 1 for a recovery failure."""
+    result = runner.invoke(app, ["run", "payment_timeout_after_commit", "--agent", "naive", "--isolation", "trusted", "--json"])
+    assert result.exit_code == 1
+    data = json.loads(result.stdout)
+    assert data["report_schema_version"] == 1
+    assert data["outcome"]["verdict"] == "GENUINE_FAILURE"
+    assert data["outcome"]["execution_success"] is True
+    assert data["outcome"]["recovery_success"] is False
+    assert data["outcome"]["side_effect_safe"] is False
+    assert data["side_effects"]["duplicate_count"] == 1
+
+
+def test_cli_run_json_output_with_output_dir_no_stdout_pollution(tmp_path: Path) -> None:
+    """Verify that passing '--output-dir' with '--json' does not mix human-readable text into stdout."""
+    result = runner.invoke(app, [
+        "run",
+        "payment_timeout_after_commit",
+        "--agent", "idempotent",
+        "--isolation", "trusted",
+        "--json",
+        "--output-dir", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    # stdout must remain 100% clean parseable JSON without file path text
+    data = json.loads(result.stdout)
+    assert data["report_schema_version"] == 1
+    assert (tmp_path / "payment_timeout_after_commit_report.json").exists()
+
+
+def test_cli_report_json_stdout_without_output_dir_creates_no_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that 'report <run_id> --json' without '--output-dir' streams pure JSON and touches no disk report files."""
+    # Ensure historical runs exist via demo
+    demo_res = runner.invoke(app, ["demo"])
+    assert demo_res.exit_code == 0
+
+    isolated_reports_dir = tmp_path / "should_not_exist_reports"
+    from recoverybench.config import Settings
+    monkeypatch.setattr("recoverybench.cli.get_settings", lambda: Settings(reports_dir=isolated_reports_dir))
+
+    report_res = runner.invoke(app, ["report", "demo_safe_agent_run", "--json"])
+    assert report_res.exit_code == 0
+    # Must be 100% valid parseable JSON on stdout with no surrounding text or pollution
+    raw_stdout = report_res.stdout.strip()
+    assert raw_stdout.startswith("{") and raw_stdout.endswith("}")
+    data = json.loads(raw_stdout)
+    assert data["run_id"] == "demo_safe_agent_run"
+    assert data["report_schema_version"] == 1
+    assert data["outcome"]["verdict"] == "PASS"
+
+    # Must pass strict ReportValidator schema validation
+    from recoverybench.reporting.schema import ReportValidator
+    ReportValidator.validate_dict(data)
+
+    # Verify no report files or directories were created on disk
+    assert not isolated_reports_dir.exists()
+    assert list(tmp_path.glob("*demo_safe_agent_run*")) == []
+    assert list(Path(".").glob("*demo_safe_agent_run*.json")) == []
+    assert list(Path(".").glob("*demo_safe_agent_run*.html")) == []
+    assert list(Path(".").glob("*demo_safe_agent_run*.xml")) == []
+
+
+def test_cli_report_json_stdout_with_output_dir_saves_json_only(tmp_path: Path) -> None:
+    """Verify that 'report <run_id> --json --output-dir' saves JSON only by default, not HTML or JUnit."""
+    demo_res = runner.invoke(app, ["demo"])
+    assert demo_res.exit_code == 0
+
+    out_dir = tmp_path / "explicit_reports_json_only"
+    report_res = runner.invoke(app, ["report", "demo_safe_agent_run", "--json", "--output-dir", str(out_dir)])
+    assert report_res.exit_code == 0
+
+    # stdout must remain 100% parseable JSON (no progress text or file paths)
+    data = json.loads(report_res.stdout)
+    assert data["run_id"] == "demo_safe_agent_run"
+
+    # Only JSON report file must be saved; HTML and JUnit XML must NOT be automatically generated
+    assert (out_dir / "demo_safe_agent_run_report.json").exists()
+    assert not (out_dir / "demo_safe_agent_run_report.html").exists()
+    assert not (out_dir / "demo_safe_agent_run_report.xml").exists()
+
+
+def test_cli_report_json_stdout_with_output_dir_and_explicit_format_all(tmp_path: Path) -> None:
+    """Verify that 'report <run_id> --json --format all --output-dir' generates all formats when explicitly requested."""
+    demo_res = runner.invoke(app, ["demo"])
+    assert demo_res.exit_code == 0
+
+    out_dir = tmp_path / "explicit_reports_all_formats"
+    report_res = runner.invoke(
+        app,
+        ["report", "demo_safe_agent_run", "--json", "--format", "all", "--output-dir", str(out_dir)],
+    )
+    assert report_res.exit_code == 0
+
+    # stdout must still be 100% parseable JSON
+    data = json.loads(report_res.stdout)
+    assert data["run_id"] == "demo_safe_agent_run"
+
+    # All requested formats must exist
+    assert (out_dir / "demo_safe_agent_run_report.json").exists()
+    assert (out_dir / "demo_safe_agent_run_report.html").exists()
+    assert (out_dir / "demo_safe_agent_run_report.xml").exists()
+
+
+def test_cli_validate_report_success(tmp_path: Path) -> None:
+    """Verify that 'validate-report' command successfully validates a valid report JSON file."""
+    run_res = runner.invoke(app, [
+        "run",
+        "payment_timeout_after_commit",
+        "--agent", "idempotent",
+        "--isolation", "trusted",
+        "--output-dir", str(tmp_path),
+    ])
+    assert run_res.exit_code == 0
+
+    report_file = tmp_path / "payment_timeout_after_commit_report.json"
+    assert report_file.exists()
+
+    # Explicit validate-report command
+    val_res = runner.invoke(app, ["validate-report", str(report_file)])
+    assert val_res.exit_code == 0
+    assert "Valid execution report" in val_res.stdout
+
+    # Auto-detection via generic validate command
+    val_auto_res = runner.invoke(app, ["validate", str(report_file)])
+    assert val_auto_res.exit_code == 0
+    assert "Valid execution report" in val_auto_res.stdout
+
+
+def test_cli_validate_report_malformed_error(tmp_path: Path) -> None:
+    """Verify that 'validate-report' reports errors and exits with non-zero code on malformed JSON."""
+    malformed_file = tmp_path / "bad_report.json"
+    malformed_file.write_text('{"report_schema_version": 1, invalid json', encoding="utf-8")
+
+    result = runner.invoke(app, ["validate-report", str(malformed_file)])
+    assert result.exit_code != 0
+    combined = result.output or result.stderr
+    assert "Failed to parse report JSON" in combined or "Error" in combined
+
+
+def test_cli_validate_report_unsupported_version_error(tmp_path: Path) -> None:
+    """Verify that 'validate-report' reports unsupported report schema version with exit code 2."""
+    bad_ver_file = tmp_path / "unsupported_version_report.json"
+    bad_data = {
+        "report_schema_version": 99,
+        "recoverybench_version": "0.1.0",
+        "run_id": "test_bad_ver",
+    }
+    bad_ver_file.write_text(json.dumps(bad_data), encoding="utf-8")
+
+    result = runner.invoke(app, ["validate-report", str(bad_ver_file)])
+    assert result.exit_code == 2
+    combined = result.output or result.stderr
+    assert "Unsupported report_schema_version: 99" in combined
+    assert "Supported versions: [1]" in combined

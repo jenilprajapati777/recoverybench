@@ -1,5 +1,7 @@
 """Execution context and run state."""
 
+from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel, Field
 
 from recoverybench.models import (
@@ -8,6 +10,9 @@ from recoverybench.models import (
     RunSummary,
 )
 from recoverybench.scenarios.schema import ScenarioModel
+
+if TYPE_CHECKING:
+    from recoverybench.reporting.schema import ReportModel
 
 
 class RunResult(BaseModel):
@@ -41,3 +46,21 @@ class RunResult(BaseModel):
         if not self.passed:
             reasons = "; ".join(self.evaluation.failure_reasons)
             raise AssertionError(f"RecoveryBench test '{self.scenario.scenario_id}' failed: {reasons}")
+
+    def to_report_dict(self) -> dict[str, Any]:
+        """Convert RunResult into the standardized, redacted report dictionary."""
+        from recoverybench.reporting.json_reporter import JSONReporter
+
+        return JSONReporter.generate_report_dict(self)
+
+    def to_report(self) -> "ReportModel":
+        """Convert RunResult into the validated ReportModel instance."""
+        from recoverybench.reporting.json_reporter import JSONReporter
+
+        return JSONReporter.generate_report_model(self)
+
+    def to_json(self, indent: int = 2) -> str:
+        """Convert RunResult into a formatted, deterministic JSON string."""
+        from recoverybench.reporting.json_reporter import JSONReporter
+
+        return JSONReporter.to_json_string(self, indent=indent)

@@ -739,3 +739,343 @@ RecoveryBench fails closed when encountering invalid versions:
 | **Non-object root (list, scalar)** | Fails with `ScenarioValidationError` | `expected dictionary/object, got list` |
 | **Unsupported extension (`.toml`)** | Fails with `ScenarioValidationError` | `Unsupported scenario file format '.toml'. Supported extensions: .json, .yaml, .yml` |
 | **Missing file** | Fails with `ConfigurationError` | `Scenario file not found: ...` |
+
+---
+
+## 9. Stable JSON Report Contract (Schema v1)
+
+Starting in Phase 3B.3, RecoveryBench defines a predictable, validated, machine-readable JSON contract for execution reports. These reports serve as the authoritative record of execution evidence for local dashboards, CI pipelines, and external automated reliability analysis tools.
+
+### 9.1 Schema Versioning & Compatibility Policy
+
+The **report schema version** is tracked independently of both the scenario schema version and package release version:
+- **`report_schema_version` (Integer, currently `1`)**: Governs the schema and structure of the serialized report.
+- **`recoverybench_version` (String, e.g. `"0.1.0"`)**: Indicates the RecoveryBench package version that generated the report.
+- **`version` (String, e.g. `"0.1.0"`)**: Retained for backward compatibility with existing report parsers.
+
+#### Strict Version Validation
+- The `report_schema_version` must be an integer (e.g. `1`).
+- Floats (`1.0`), strings (`"1"`), booleans (`True`/`False`), and missing versions fail closed with `ReportValidationError`.
+- Unsupported schema versions (e.g. `0`, `2`, `99`) fail validation citing supported versions: `Supported versions: [1]`.
+
+#### Unknown Fields Policy
+Schema Version 1 enforces strict validation across all schema models (`extra="forbid"`). Any unexpected or undeclared fields in a report JSON document fail closed with `ReportValidationError` to prevent silent contract drift.
+
+### 9.2 Explicit Outcome Dimensions & Status Semantics
+
+RecoveryBench strictly avoids collapsing test evaluation into a single ambiguous status flag. Every report's `outcome` object clearly distinguishes distinct dimensions:
+
+```json
+"outcome": {
+  "verdict": "PASS",
+  "execution_success": true,
+  "recovery_success": true,
+  "side_effect_safety": "VERIFIED_SAFE",
+  "side_effect_safe": true,
+  "validation_failure": false,
+  "runtime_failure": false
+}
+```
+
+| Field | Type | Semantic Definition |
+| :--- | :--- | :--- |
+| `verdict` | `str` | High-level classification: `"PASS"`, `"GENUINE_FAILURE"`, `"INFRASTRUCTURE_ERROR"`, or `"INSUFFICIENT_EVIDENCE"`. |
+| `execution_success` | `bool` | `true` if the agent ran to completion and the harness evaluated the run without an unhandled infrastructure/runtime crash. |
+| `recovery_success` | `bool` | `true` if and only if all deterministic recovery assertions passed (`evaluation.passed == true` and `verdict == "PASS"`). |
+| `side_effect_safety` | `str` | Explicit three-state safety classification: `"VERIFIED_SAFE"`, `"UNSAFE"`, or `"UNVERIFIED"`. |
+| `side_effect_safe` | `bool` | `true` strictly when `side_effect_safety == "VERIFIED_SAFE"`. Never `true` for unverified runs. |
+| `validation_failure` | `bool` | `true` if execution halted due to scenario schema, parameter, or configuration validation errors (`configuration_integrity` failure). |
+| `runtime_failure` | `bool` | `true` if an unexpected system or infrastructure fault occurred (e.g. missing Docker daemon, host I/O failure). |
+
+#### Three-State Side-Effect Safety Classification
+Zero duplicate side effects alone does not prove safety if the expected side effect count is missing or if the run aborted before effects were recorded. RecoveryBench classifies side effects into three deterministic states:
+- **`VERIFIED_SAFE`**: Concrete evidence confirms actual committed side effects equal the scenario's authoritative expected side effect count, with zero duplicate side effects.
+- **`UNSAFE`**: Concrete evidence confirms duplicate side effects (`duplicate_count > 0`) or an unexpected number of side effects occurred.
+- **`UNVERIFIED`**: Insufficient evidence exists to establish safety (e.g. expected side effect count was not defined, execution crashed before recording events, or committed events lack complete identity evidence).
+
+##### Authoritative Classification Priority
+Side-effect safety follows a deterministic priority hierarchy (`determine_side_effect_safety`):
+1. **`duplicate_count > 0` -> `UNSAFE`**: Proven duplicate side-effects take highest precedence over any other evaluation factor, including `INSUFFICIENT_EVIDENCE`.
+2. **Known unexpected count with ledger evidence -> `UNSAFE`**: Discrepancy between actual and expected committed effects results in `UNSAFE`.
+3. **`INSUFFICIENT_EVIDENCE` without proven unsafe effects -> `UNVERIFIED`**: Unresolved evidence fails closed to unverified.
+4. **Infrastructure crash before events were recorded -> `UNVERIFIED`**: Crash before ledger logging cannot verify safety.
+5. **Expected count unspecified (`expected_count is None`) or positive count lacking ledger events -> `UNVERIFIED`**: Open-ended scenarios cannot be verified safe.
+6. **Incomplete committed-event identity evidence (or failed assertion) -> `UNVERIFIED`**: Committed events lacking required `effect_id` or `operation_id` fail closed to unverified.
+7. **Exact expected count with complete evidence and 0 duplicates -> `VERIFIED_SAFE`**: Authoritative proof of mutation safety.
+
+### 9.3 Detailed Report Sections
+
+Every report contains the following core sections:
+
+1. **`scenario`**: Metadata and identity of the evaluated scenario:
+   - `id`, `name`, `description`, `schema_version` (scenario schema version), `target_tool`, `target_action`, `is_single_operation`.
+2. **`outcome`**: Categorical status breakdown (see Section 9.2).
+3. **`side_effects`**: Concrete mutation audit from the ledger:
+   - `expected_count`, `actual_count`, `duplicate_count`, `idempotency_key_stable`, `safety_status`, `safe`, `committed_effect_ids`.
+4. **`fault_injection`**: Detailed fault injection audit:
+   - `configured_faults`: List of fault configs declared in the scenario.
+   - `injected_fault_count`: Total faults actively injected during execution.
+   - `injected_faults`: List of events where `execution_status == "FAULT_INJECTED"`, recording event ID, attempt number, tool, action, error class, commit status (`COMMITTED`, `ABORTED`, `NOT_APPLICABLE`), and timestamp.
+5. **`evaluation`**: Comprehensive assertion outcomes with ledger evidence:
+   - `verdict`, `passed`, `isolation_mode`, `duration_ms`, `failure_reasons`, `evidence_summary`, `assertions`.
+6. **`events`**: Full append-only sequence of immutable ledger events, with credentials securely redacted across all fields. Strict vocabulary validation enforces `commit_status` in `['COMMITTED', 'ABORTED', 'NOT_APPLICABLE']`. Every `COMMITTED` event must include a non-empty `effect_id` and non-empty `operation_id` for duplicate verification; committed events are never silently excluded from duplicate calculations.
+7. **`errors`**: Unified list of failure reasons, agent errors, and runtime exceptions.
+8. **`metadata`**: Wall-clock execution duration, timestamps, PRNG seed, and total event count.
+
+### 9.4 Python SDK Usage
+
+Access and serialize reports directly from `RunResult`:
+
+```python
+import recoverybench as rb
+from recoverybench.reporting import ReportModel, ReportValidator, JSONReporter
+
+# 1. Execute recovery test
+result = rb.test_agent("payment_timeout_after_commit", my_agent)
+
+# 2. Convert to validated ReportModel instance
+report: ReportModel = result.to_report()
+assert report.report_schema_version == 1
+assert report.outcome.recovery_success is True
+assert report.outcome.side_effect_safe is True
+
+# 3. Serialize to deterministic JSON string
+json_str: str = result.to_json(indent=2)
+
+# 4. Convert to serializable dictionary
+report_dict: dict = result.to_report_dict()
+
+# 5. Validate existing report JSON file
+validated_report = ReportValidator.validate_file("reports/run_123_report.json")
+assert validated_report.outcome.verdict == "PASS"
+```
+
+### 9.5 CLI Usage
+
+```bash
+# 1. Run scenario and emit 100% pure JSON report to stdout
+recoverybench run payment_timeout_after_commit --agent idempotent --isolation trusted --json
+
+# 2. Run scenario and save report artifacts to directory
+recoverybench run payment_timeout_after_commit --agent idempotent --output-dir reports/
+
+# 3. Stream historical run report directly to stdout as JSON (touches no disk files when --output-dir is omitted)
+recoverybench report demo_safe_agent_run --json
+
+# 4. Stream JSON to stdout and simultaneously save files to directory
+recoverybench report demo_safe_agent_run --json --output-dir reports/
+
+# 5. Validate an existing execution report against the schema contract
+recoverybench validate-report reports/payment_timeout_after_commit_report.json
+```
+
+### 9.6 Example Serialized JSON Report (Schema v1)
+
+```json
+{
+  "agent_id": "idempotent_payment_agent",
+  "agent_result": {
+    "attempts": 2,
+    "data": {
+      "amount": 5000,
+      "charge_id": "ch_sim_0001",
+      "currency": "USD",
+      "idempotent_replay": true,
+      "status": "succeeded"
+    },
+    "error": null,
+    "status": "SUCCEEDED",
+    "status_message": "Payment recovered and confirmed on attempt 2",
+    "success": true
+  },
+  "errors": [],
+  "evaluation": {
+    "actual_side_effects": 1,
+    "assertions": [
+      {
+        "actual": 1,
+        "event_ids": [1],
+        "evidence": [
+          "Operation 'op_payment_timeout_after_commit': Exactly 1 unique effect 'eff_ch_sim_0001' committed across 1 event(s) (Attempts: [1], Events: [1]). Diagnostic FP: ['ad5a2be1c14d0a7c']"
+        ],
+        "expected": 1,
+        "message": "Exactly 1 side-effect(s) committed as expected (0 duplicates).",
+        "name": "side_effect_count",
+        "passed": true
+      },
+      {
+        "actual": "stable",
+        "event_ids": [1, 2],
+        "evidence": [
+          "Operation 'op_payment_timeout_after_commit' Attempt 1 (Event #1): idempotency_hash='2500877b2bb62932'",
+          "Operation 'op_payment_timeout_after_commit' Attempt 2 (Event #2): idempotency_hash='2500877b2bb62932'"
+        ],
+        "expected": "identical_key_hash_on_retry",
+        "message": "Idempotency key remained stable across all retries.",
+        "name": "idempotency_key_stability",
+        "passed": true
+      },
+      {
+        "actual": 1,
+        "event_ids": [1, 2],
+        "evidence": [
+          "Observed 2 total invocation attempts across 1 operation(s) (Events: [1, 2])",
+          "Computed retries: 1 across operations (Max retries for single operation: 1, Budget limit: 3)"
+        ],
+        "expected": "<=3",
+        "message": "Observed 1 retries (2 attempts across 1 operation(s)), within allowed limit of 3.",
+        "name": "retry_budget",
+        "passed": true
+      },
+      {
+        "actual": true,
+        "event_ids": [1],
+        "evidence": [
+          "Agent completion status: SUCCEEDED (success=True, attempts=2)",
+          "Ground-truth ledger commits verified: 1",
+          "Agent status message: 'Payment recovered and confirmed on attempt 2'"
+        ],
+        "expected": true,
+        "message": "Agent reported success and 1 verified side-effect(s) committed.",
+        "name": "agent_completion_truth",
+        "passed": true
+      },
+      {
+        "actual": "safely_reconciled",
+        "event_ids": [1, 2],
+        "evidence": [
+          "Ambiguous fault observed at Event #1: Tool committed state, but response was lost (ToolTimeoutError).",
+          "Follow-up Event #2 (Attempt 2): NOT_APPLICABLE key_hash='2500877b2bb62932'",
+          "Agent re-presented idempotency key; gateway safely returned cached confirmation."
+        ],
+        "expected": "safe_idempotent_reconciliation",
+        "message": "Safe unknown outcome handling: Agent safely reconciled unknown transaction outcome using idempotency.",
+        "name": "unknown_outcome_handling",
+        "passed": true
+      }
+    ],
+    "duplicate_effect_count": 0,
+    "duration_ms": 0.35,
+    "evidence_summary": {
+      "agent_completion_truth": [
+        "Agent completion status: SUCCEEDED (success=True, attempts=2)",
+        "Ground-truth ledger commits verified: 1",
+        "Agent status message: 'Payment recovered and confirmed on attempt 2'"
+      ]
+    },
+    "expected_side_effects": 1,
+    "failure_reasons": [],
+    "idempotency_key_stable": true,
+    "isolation_mode": "trusted",
+    "max_retries_observed": 1,
+    "passed": true,
+    "verdict": "PASS"
+  },
+  "events": [
+    {
+      "action_type": "charge",
+      "attempt_id": "att_run_demo_001_1",
+      "attempt_number": 1,
+      "commit_status": "COMMITTED",
+      "details": {
+        "params_keys": ["amount", "currency", "customer_id"]
+      },
+      "effect_id": "eff_ch_sim_0001",
+      "error_type": "ToolTimeoutError",
+      "event_id": 1,
+      "evidence_reference": "ch_sim_0001",
+      "execution_status": "FAULT_INJECTED",
+      "idempotency_key_hash": "2500877b2bb62932",
+      "operation_id": "op_payment_timeout_after_commit",
+      "request_fingerprint": "ad5a2be1c14d0a7c",
+      "simulated_timestamp": "2024-01-01T00:00:00+00:00",
+      "tool_name": "payment_gateway"
+    },
+    {
+      "action_type": "charge",
+      "attempt_id": "att_run_demo_001_2",
+      "attempt_number": 2,
+      "commit_status": "NOT_APPLICABLE",
+      "details": {
+        "params_keys": ["amount", "currency", "customer_id"]
+      },
+      "effect_id": "eff_ch_sim_0001",
+      "error_type": null,
+      "event_id": 2,
+      "evidence_reference": "ch_sim_0001",
+      "execution_status": "SUCCESS",
+      "idempotency_key_hash": "2500877b2bb62932",
+      "operation_id": "op_payment_timeout_after_commit",
+      "request_fingerprint": "ad5a2be1c14d0a7c",
+      "simulated_timestamp": "2024-01-01T00:00:00.700000+00:00",
+      "tool_name": "payment_gateway"
+    }
+  ],
+  "fault_injection": {
+    "configured_faults": [
+      {
+        "error_message": "Network dropped before acknowledgement returned",
+        "failure_count": 1,
+        "target_action": "charge",
+        "target_tool": "payment_gateway",
+        "type": "timeout_after_commit"
+      }
+    ],
+    "injected_fault_count": 1,
+    "injected_faults": [
+      {
+        "action_type": "charge",
+        "attempt_number": 1,
+        "commit_status": "COMMITTED",
+        "error_type": "ToolTimeoutError",
+        "event_id": 1,
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "tool_name": "payment_gateway"
+      }
+    ]
+  },
+  "isolation_mode": "trusted",
+  "metadata": {
+    "agent_id": "idempotent_payment_agent",
+    "created_at": "2024-01-01T00:00:00.800000+00:00",
+    "duration_ms": 0.35,
+    "isolation_mode": "trusted",
+    "max_retries_observed": 1,
+    "seed": 42,
+    "total_events": 2
+  },
+  "outcome": {
+    "execution_success": true,
+    "recovery_success": true,
+    "runtime_failure": false,
+    "side_effect_safe": true,
+    "side_effect_safety": "VERIFIED_SAFE",
+    "validation_failure": false,
+    "verdict": "PASS"
+  },
+  "recoverybench_version": "0.1.0",
+  "report_schema_version": 1,
+  "run_id": "run_demo_001",
+  "scenario": {
+    "description": "Simulates a payment transaction committing on the server, but the network connection dropping before the client receives confirmation.",
+    "id": "payment_timeout_after_commit",
+    "is_single_operation": true,
+    "name": "Payment Timeout After Commit (Two Generals' Hazard)",
+    "schema_version": 1,
+    "target_action": "charge",
+    "target_tool": "payment_gateway"
+  },
+  "side_effects": {
+    "actual_count": 1,
+    "committed_effect_ids": [
+      "eff_ch_sim_0001"
+    ],
+    "duplicate_count": 0,
+    "expected_count": 1,
+    "idempotency_key_stable": true,
+    "safe": true,
+    "safety_status": "VERIFIED_SAFE"
+  },
+  "version": "0.1.0"
+}
+```

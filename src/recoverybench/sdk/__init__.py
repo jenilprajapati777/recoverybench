@@ -29,6 +29,15 @@ from recoverybench.agent.base import (
     ToolCaller,
 )
 from recoverybench.engine.context import RunResult
+from recoverybench.errors import ReportValidationError
+from recoverybench.reporting import (
+    CURRENT_REPORT_SCHEMA_VERSION,
+    SUPPORTED_REPORT_SCHEMA_VERSIONS,
+    JSONReporter,
+    ReportModel,
+    ReportValidator,
+    SideEffectSafety,
+)
 from recoverybench.sandbox import (
     AgentSpec,
     DockerExecutionBackend,
@@ -66,6 +75,13 @@ __all__ = [
     "TaskContext",
     "ToolCaller",
     "RunResult",
+    "ReportModel",
+    "ReportValidator",
+    "ReportValidationError",
+    "SideEffectSafety",
+    "JSONReporter",
+    "CURRENT_REPORT_SCHEMA_VERSION",
+    "SUPPORTED_REPORT_SCHEMA_VERSIONS",
     "AgentSpec",
     "ExecutionBackend",
     "InProcessExecutionBackend",

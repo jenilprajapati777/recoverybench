@@ -375,6 +375,58 @@ RecoveryBench evaluates 5 core invariants from the immutable ledger:
 
 ---
 
+## Stable JSON Report Contract (Schema v1)
+
+RecoveryBench produces deterministic, machine-readable JSON reports for dashboards, CI pipelines, and reliability analysis:
+
+```bash
+# Emit 100% pure JSON report to stdout
+recoverybench run payment_timeout_after_commit --agent idempotent --isolation trusted --json
+
+# Validate an execution report file against the contract schema
+recoverybench validate-report reports/payment_timeout_after_commit_report.json
+```
+
+### Explicit Outcome Dimensions
+Reports clearly distinguish execution success from recovery success and side-effect safety. Side-effect safety follows a three-state model (`VERIFIED_SAFE`, `UNSAFE`, `UNVERIFIED`) where proven duplicates take strict precedence and incomplete evidence fails closed.
+
+```json
+{
+  "report_schema_version": 1,
+  "recoverybench_version": "0.1.0",
+  "run_id": "run_001",
+  "outcome": {
+    "verdict": "PASS",
+    "execution_success": true,
+    "recovery_success": true,
+    "side_effect_safety": "VERIFIED_SAFE",
+    "side_effect_safe": true,
+    "validation_failure": false,
+    "runtime_failure": false
+  },
+  "side_effects": {
+    "actual_count": 1,
+    "expected_count": 1,
+    "duplicate_count": 0,
+    "idempotency_key_stable": true,
+    "safety_status": "VERIFIED_SAFE",
+    "safe": true,
+    "committed_effect_ids": ["eff_ch_sim_0001"]
+  }
+}
+```
+
+In Python SDK:
+```python
+result = rb.test_agent("payment_timeout_after_commit", my_agent)
+report = result.to_report()  # Validated ReportModel
+json_str = result.to_json()  # Deterministic JSON
+```
+
+See the [SDK Integration Guide](docs/SDK_INTEGRATION_GUIDE.md#9-stable-json-report-contract-schema-v1) for complete field specifications, schema versioning, and validation details.
+
+---
+
 ## CI/CD Integration & GitHub Actions
 
 See the comprehensive [GitHub Actions Guide](docs/GITHUB_ACTIONS_GUIDE.md) for full workflows and configuration.
