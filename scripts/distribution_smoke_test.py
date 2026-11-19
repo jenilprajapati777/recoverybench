@@ -67,8 +67,10 @@ def main() -> None:
         "recoverybench/reporting/html_reporter.py",
         "recoverybench/reporting/json_reporter.py",
         "recoverybench/reporting/junit_reporter.py",
+        "recoverybench/reporting/schema.py",
         "recoverybench/sample_project/resources.py",
         "recoverybench/scenarios/registry.py",
+        "recoverybench/scenarios/validator.py",
     ]
 
     with zipfile.ZipFile(wheel_path) as zf:
@@ -76,13 +78,13 @@ def main() -> None:
         for req in required_wheel_members:
             if req not in members:
                 sys.exit(f"FAIL: Required module '{req}' missing from wheel members!")
-        print(f"✓ All {len(required_wheel_members)} critical modules present in wheel.")
+        print(f"[PASS] All {len(required_wheel_members)} critical modules present in wheel.")
 
         # Check license and metadata
         license_members = [m for m in members if m.endswith(".dist-info/licenses/LICENSE") or m.endswith(".dist-info/LICENSE")]
         if not license_members:
             sys.exit("FAIL: LICENSE missing from wheel dist-info!")
-        print(f"✓ License file present in wheel: {license_members[0]}")
+        print(f"[PASS] License file present in wheel: {license_members[0]}")
 
         metadata_members = [m for m in members if m.endswith(".dist-info/METADATA")]
         if not metadata_members:
@@ -98,7 +100,7 @@ def main() -> None:
         ]:
             if expected_header not in metadata_text:
                 sys.exit(f"FAIL: Wheel METADATA missing expected line: '{expected_header}'")
-        print("✓ Wheel METADATA verified (PEP 639 license and PyPI classifiers present).")
+        print("[PASS] Wheel METADATA verified (PEP 639 license and PyPI classifiers present).")
 
     # 3. Create Clean Test Virtual Environment Outside Repository
     print("\n--- Step 3: Creating Isolated Virtual Environment Outside Repo ---")
@@ -128,7 +130,7 @@ def main() -> None:
 
         if not venv_cli.exists():
             sys.exit(f"FAIL: Installed console script 'recoverybench' not found at {venv_cli}")
-        print(f"✓ Installed recoverybench console script verified at {venv_cli}")
+        print(f"[PASS] Installed recoverybench console script verified at {venv_cli}")
 
         # 5. Execute commands outside repo working directory
         print("\n--- Step 5: Testing Installed Console Script and Commands Outside Repo ---")
@@ -136,34 +138,34 @@ def main() -> None:
         # Test recoverybench --version
         ver_res = run_cmd([str(venv_cli), "--version"], cwd=run_dir)
         print(f"Output of --version: {ver_res.stdout.strip()}")
-        if "0.1.0" not in ver_res.stdout or "RecoveryBench" not in ver_res.stdout:
+        if "0.2.0" not in ver_res.stdout or "RecoveryBench" not in ver_res.stdout:
             sys.exit(f"FAIL: Unexpected --version output: {ver_res.stdout}")
-        print("✓ 'recoverybench --version' passed.")
+        print("[PASS] 'recoverybench --version' passed.")
 
         # Test recoverybench --help
         help_res = run_cmd([str(venv_cli), "--help"], cwd=run_dir)
         if "Usage:" not in help_res.stdout or "doctor" not in help_res.stdout:
             sys.exit(f"FAIL: Unexpected --help output: {help_res.stdout}")
-        print("✓ 'recoverybench --help' passed.")
+        print("[PASS] 'recoverybench --help' passed.")
 
         # Test recoverybench list-scenarios
         list_res = run_cmd([str(venv_cli), "list-scenarios"], cwd=run_dir)
         if "payment_timeout" not in list_res.stdout:
             sys.exit(f"FAIL: Built-in scenarios not listed in table: {list_res.stdout}")
-        print("✓ 'recoverybench list-scenarios' passed.")
+        print("[PASS] 'recoverybench list-scenarios' passed.")
 
         # Test recoverybench list-scenarios --json
         list_json_res = run_cmd([str(venv_cli), "list-scenarios", "--json"], cwd=run_dir)
         if "payment_timeout_after_commit" not in list_json_res.stdout:
             sys.exit(f"FAIL: Built-in scenarios not listed in JSON: {list_json_res.stdout}")
-        print("✓ 'recoverybench list-scenarios --json' passed.")
+        print("[PASS] 'recoverybench list-scenarios --json' passed.")
 
         # Test recoverybench demo (runs in trusted in-process mode by default)
         print("\n--- Step 6: Executing Out-of-the-Box Demo in Installed Environment ---")
         demo_res = run_cmd([str(venv_cli), "demo"], cwd=run_dir)
         if "Comparative Summary" not in demo_res.stdout or "GENUINE_FAILURE" not in demo_res.stdout:
             sys.exit(f"FAIL: Demo did not output comparative summary: {demo_res.stdout}")
-        print("✓ 'recoverybench demo' executed successfully.")
+        print("[PASS] 'recoverybench demo' executed successfully.")
 
         # Confirm demo reports generated in workdir/.recoverybench/reports/
         reports_dir = run_dir / ".recoverybench" / "reports"
@@ -177,7 +179,16 @@ def main() -> None:
             rep_path = reports_dir / rep
             if not rep_path.exists() or rep_path.stat().st_size == 0:
                 sys.exit(f"FAIL: Expected demo report '{rep}' missing or empty at {rep_path}!")
-        print(f"✓ All {len(expected_reports)} demo reports successfully generated.")
+        print(f"[PASS] All {len(expected_reports)} demo reports successfully generated.")
+
+        # Test recoverybench validate-report on generated demo reports
+        val_safe = run_cmd([str(venv_cli), "validate-report", str(reports_dir / "demo_safe_report.json")], cwd=run_dir)
+        if "Valid execution report" not in val_safe.stdout:
+            sys.exit(f"FAIL: validate-report failed on demo_safe_report.json: {val_safe.stdout}")
+        val_naive = run_cmd([str(venv_cli), "validate-report", str(reports_dir / "demo_naive_report.json")], cwd=run_dir)
+        if "Valid execution report" not in val_naive.stdout:
+            sys.exit(f"FAIL: validate-report failed on demo_naive_report.json: {val_naive.stdout}")
+        print("[PASS] 'recoverybench validate-report' verified on demo reports.")
 
         # 6. Verify core works without LangGraph
         print("\n--- Step 7: Verifying Core Package Without LangGraph Extra ---")
@@ -185,7 +196,7 @@ def main() -> None:
             [str(venv_python), "-c", "import recoverybench; print('VER:', recoverybench.__version__)"],
             cwd=run_dir,
         )
-        if "VER: 0.1.0" not in py_check.stdout:
+        if "VER: 0.2.0" not in py_check.stdout:
             sys.exit(f"FAIL: Incorrect imported version: {py_check.stdout}")
 
         langgraph_check = run_cmd(
@@ -195,7 +206,7 @@ def main() -> None:
         )
         if langgraph_check.returncode == 0:
             sys.exit("FAIL: langgraph should NOT be installed in core environment!")
-        print("✓ Confirmed langgraph is absent in core install and core functions independently.")
+        print("[PASS] Confirmed langgraph is absent in core install and core functions independently.")
 
         # 7. Install optional LangGraph extra and verify
         print("\n--- Step 8: Installing and Verifying Optional LangGraph Extra ---")
@@ -210,7 +221,7 @@ def main() -> None:
         )
         if "LANGGRAPH_OK" not in lg_verify.stdout:
             sys.exit(f"FAIL: LangGraph adapter import failed after installing extra: {lg_verify.stdout}")
-        print("✓ LangGraph extra installed and LangGraphAdapter successfully imported.")
+        print("[PASS] LangGraph extra installed and LangGraphAdapter successfully imported.")
 
         print("\n=================================================================")
         print("  ALL DISTRIBUTION SMOKE TESTS PASSED SUCCESSFULLY!")

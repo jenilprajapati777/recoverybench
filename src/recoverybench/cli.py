@@ -65,11 +65,11 @@ def get_version() -> str:
     except PackageNotFoundError:
         import recoverybench
 
-        return getattr(recoverybench, "__version__", "0.1.0")
+        return getattr(recoverybench, "__version__", "0.2.0")
     except Exception:
         import recoverybench
 
-        return getattr(recoverybench, "__version__", "0.1.0")
+        return getattr(recoverybench, "__version__", "0.2.0")
 
 
 def version_callback(value: bool) -> None:
