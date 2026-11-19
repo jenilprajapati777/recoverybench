@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.0] - Unreleased (Release Preparation)
+## [0.2.0] - Unreleased (Release Preparation)
+
+### Added
+- **Phase 3B.1 - SDK Contract Harmonization:**
+  - Standardized `RecoveryBenchTester` context manager and `test_agent()` high-level execution API.
+  - Added first-class `AgentSpec` support for containerized execution configurations.
+  - Enforced fail-closed behavior (Exit Code 3) when Docker isolation is requested but unavailable, eliminating silent fallback to trusted in-process mode.
+  - Harmonized isolation mode parameter naming and aliases across SDK and CLI (`"isolated"`, `"trusted"`).
+- **Phase 3B.2 - Scenario Schema Versioning & JSON Support:**
+  - Introduced explicit declarative scenario schema versioning policy (`CURRENT_SCENARIO_SCHEMA_VERSION = 1`, `SUPPORTED_SCENARIO_SCHEMA_VERSIONS = frozenset({1})`).
+  - Added first-class JSON scenario loading and schema validation via `ScenarioValidator.validate_file()` alongside existing YAML format.
+  - Enforced strict rejection of unsupported schema versions with actionable error diagnostics.
+  - Implemented deterministic scenario registry discovery order supporting mixed YAML and JSON definitions.
+- **Phase 3B.3 - Stable JSON Report Contract:**
+  - Established predictable, machine-readable JSON report contract (`ReportModel`, `report_schema_version: 1`) using strict Pydantic v2 validation.
+  - Decoupled report specification schema version from application package version.
+  - Implemented explicit three-state side-effect safety classification (`SideEffectSafety` enum: `VERIFIED_SAFE`, `UNSAFE`, `UNVERIFIED`) replacing legacy boolean assumptions.
+  - Implemented rigorous ledger evidence cross-consistency checks in `ReportValidator`: validates actual committed counts, unique effect IDs, duplicate effect IDs, and non-empty identity semantics against the append-only event stream.
+  - Added `recoverybench validate-report` CLI command for schema and semantic validation of external or archived JSON reports.
+  - Automated sensitive data, token, and API key redaction in serialized JSON reports.
+  - Implemented clean stdout JSON streaming in `recoverybench report <run_id> --json` with Rich console diagnostics routed to stderr.
+- **Phase 3B.4 - Developer Experience & Release Readiness:**
+  - Clarified PyPI installation documentation distinguishing the published 0.1.0 release from current GitHub development source.
+  - Corrected contributor setup documentation to include the `langgraph` extra (`pip install -e ".[langgraph,dev]"`) required for full test suite execution.
+  - Added prominent Docker trusted-mode guidance for local in-process development environments.
+  - Updated canonical package version to `0.2.0` in preparation for release.
+
+## [0.1.0] - 2026-11-16
 
 ### Added
 - **Core Recovery Testing Harness:**

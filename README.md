@@ -131,26 +131,38 @@ RecoveryBench provides **deterministic fault injection**, an **append-only effec
 
 ### 1. Installation
 
-#### Option A: End-User Installation (PyPI Package)
-For production and testing pipelines once published:
+> [!NOTE]
+> **Package Distribution & Versioning Status:**
+> - **Published PyPI Package (`0.1.0`):** The package currently published on PyPI is `recoverybench==0.1.0` (published 2026-11-16). It includes the foundational recovery test harness, SQLite ledger, and core adapters.
+> - **Current GitHub Source (`main`):** Development on `main` contains the complete Phase 3B features: the stable JSON report contract (`ReportModel`, `SideEffectSafety` classifications), the `validate-report` CLI command, JSON scenario definitions, and scenario schema versioning.
+> - **Upcoming Release (`0.2.0`):** Version `0.2.0` is currently being prepared to bring the published PyPI distribution into parity with `main`. It is not yet published on PyPI.
+>
+> If you require Phase 3B capabilities (`validate-report`, `ReportModel`, `SideEffectSafety`, JSON scenarios), install from source via **Option B** below.
+
+#### Option A: Published PyPI Package (Release 0.1.0)
+For stable testing using the initial published release:
 ```bash
-python -m pip install recoverybench
+python -m pip install "recoverybench==0.1.0"
 
 # With optional LangGraph framework adapter:
-python -m pip install "recoverybench[langgraph]"
+python -m pip install "recoverybench[langgraph]==0.1.0"
 ```
 
-#### Option B: Contributor & Development Installation (From Source)
+#### Option B: Current Development Source (GitHub `main` - Recommended for Phase 3B Features)
+To use the latest capabilities including `validate-report`, `ReportModel`, `SideEffectSafety`, and JSON scenarios:
 ```bash
 # Clone the repository
 git clone https://github.com/jenilprajapati777/recoverybench.git
 cd recoverybench
 
-# Create virtual environment and install in editable mode
+# Create virtual environment and install in editable mode with full testing extras
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+pip install -e ".[langgraph,dev]"
 ```
+
+> [!TIP]
+> **Contributor Testing Dependencies:** The `langgraph` extra (`pip install -e ".[langgraph,dev]"`) is required to run the full automated test suite (`pytest`) because several integration test suites verify LangGraph graph state reconciliation and tool bridges. In production runtime environments, LangGraph remains an optional dependency.
 
 ### 2. Verify Your Environment
 
@@ -165,6 +177,12 @@ recoverybench doctor
 Confirms CLI binary, Python version (>=3.11), SQLite engine, scenario registry, and Docker isolation readiness.
 
 ### 3. Run the Out-of-the-Box Demo
+
+> [!IMPORTANT]
+> **Execution Isolation & Docker Requirements:**
+> - **Default Container Isolation (`--isolation isolated`):** `recoverybench run` executes agents inside hardened Linux containers with strict network isolation (`--network=none`), all Linux capabilities dropped (`--cap-drop=ALL`), and resource caps. This mode requires a running Docker daemon. If Docker is unavailable, RecoveryBench fails closed with Exit Code 3 (`INFRASTRUCTURE_ERROR`) to prevent unintentional unconfined execution.
+> - **Local In-Process Development (`--isolation trusted`):** If Docker is not available in your local development environment or lightweight CI runner, pass `--isolation trusted` (e.g. `recoverybench run <scenario> --agent <agent> --isolation trusted`) to execute in-process without Docker.
+> - **Security Notice:** Trusted mode executes agent code directly within the host Python process without network boundaries, capability restrictions, or filesystem isolation. It is designed for fast local iteration and trusted code only - it is **not** equivalent to Docker isolation and must not be treated as a secure sandbox.
 
 Run the comparative demonstration pitting an unsafe naive retry agent against a safe idempotent recovery agent under a `timeout_after_commit` fault:
 
@@ -225,6 +243,7 @@ tool_call("payment_gateway", "charge", task.task_params, stable_key)
 | `recoverybench doctor` | Check environment, Docker daemon, container readiness, and sandbox limits. |
 | `recoverybench list-scenarios` | List registered built-in and local YAML recovery scenarios. |
 | `recoverybench validate <path>` | Validate scenario YAML syntax and semantic rules without executing. |
+| `recoverybench validate-report <path>` | Validate report JSON syntax, schema contract, and ledger evidence consistency. |
 | `recoverybench demo [--isolation trusted]` | Run comparative demo of naive vs. safe agents (trusted by default). |
 | `recoverybench run <scenario> [--isolation isolated\|trusted]` | Run a recovery test with isolated container or trusted execution. |
 | `recoverybench suite <dir> [--isolation isolated\|trusted]` | Batch execute scenario suite in isolated container or trusted mode. |
@@ -393,7 +412,7 @@ Reports clearly distinguish execution success from recovery success and side-eff
 ```json
 {
   "report_schema_version": 1,
-  "recoverybench_version": "0.1.0",
+  "recoverybench_version": "0.2.0",
   "run_id": "run_001",
   "outcome": {
     "verdict": "PASS",

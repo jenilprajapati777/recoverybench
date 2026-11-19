@@ -592,7 +592,7 @@ def test_backward_compatibility_fields(timeout_after_scenario: ScenarioModel) ->
     data = JSONReporter.generate_report_dict(result)
 
     # 1. version
-    assert data["version"] == "0.1.0"
+    assert data["version"] == "0.2.0"
     # 2. run_id
     assert data["run_id"] == "run_compat_check"
     # 3. scenario

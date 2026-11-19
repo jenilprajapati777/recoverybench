@@ -266,7 +266,7 @@ def test_cli_run_json_output_pass() -> None:
     # Must be valid pure JSON on stdout
     data = json.loads(result.stdout)
     assert data["report_schema_version"] == 1
-    assert data["recoverybench_version"] == "0.1.0"
+    assert data["recoverybench_version"] == "0.2.0"
     assert data["outcome"]["verdict"] == "PASS"
     assert data["outcome"]["execution_success"] is True
     assert data["outcome"]["recovery_success"] is True
