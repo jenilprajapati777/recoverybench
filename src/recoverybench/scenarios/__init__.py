@@ -6,6 +6,9 @@ from recoverybench.scenarios.schema import (
     SUPPORTED_SCENARIO_SCHEMA_VERSIONS,
     ScenarioAssertions,
     ScenarioModel,
+    StepExecutionStatus,
+    WorkflowStatus,
+    WorkflowStep,
     validate_scenario_schema_version,
 )
 from recoverybench.scenarios.validator import (
@@ -22,6 +25,9 @@ __all__ = [
     "validate_scenario_schema_version",
     "ScenarioModel",
     "ScenarioAssertions",
+    "StepExecutionStatus",
+    "WorkflowStatus",
+    "WorkflowStep",
     "ScenarioRegistry",
     "ScenarioValidator",
     "load_scenario",

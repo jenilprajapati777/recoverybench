@@ -265,7 +265,7 @@ def test_cli_run_json_output_pass() -> None:
     assert result.exit_code == 0
     # Must be valid pure JSON on stdout
     data = json.loads(result.stdout)
-    assert data["report_schema_version"] == 1
+    assert data["report_schema_version"] in (1, 2)
     assert data["recoverybench_version"] == "0.2.0"
     assert data["outcome"]["verdict"] == "PASS"
     assert data["outcome"]["execution_success"] is True
@@ -280,7 +280,7 @@ def test_cli_run_json_output_fail() -> None:
     result = runner.invoke(app, ["run", "payment_timeout_after_commit", "--agent", "naive", "--isolation", "trusted", "--json"])
     assert result.exit_code == 1
     data = json.loads(result.stdout)
-    assert data["report_schema_version"] == 1
+    assert data["report_schema_version"] in (1, 2)
     assert data["outcome"]["verdict"] == "GENUINE_FAILURE"
     assert data["outcome"]["execution_success"] is True
     assert data["outcome"]["recovery_success"] is False
@@ -301,7 +301,7 @@ def test_cli_run_json_output_with_output_dir_no_stdout_pollution(tmp_path: Path)
     assert result.exit_code == 0
     # stdout must remain 100% clean parseable JSON without file path text
     data = json.loads(result.stdout)
-    assert data["report_schema_version"] == 1
+    assert data["report_schema_version"] in (1, 2)
     assert (tmp_path / "payment_timeout_after_commit_report.json").exists()
 
 
@@ -322,7 +322,7 @@ def test_cli_report_json_stdout_without_output_dir_creates_no_files(tmp_path: Pa
     assert raw_stdout.startswith("{") and raw_stdout.endswith("}")
     data = json.loads(raw_stdout)
     assert data["run_id"] == "demo_safe_agent_run"
-    assert data["report_schema_version"] == 1
+    assert data["report_schema_version"] in (1, 2)
     assert data["outcome"]["verdict"] == "PASS"
 
     # Must pass strict ReportValidator schema validation
@@ -428,4 +428,4 @@ def test_cli_validate_report_unsupported_version_error(tmp_path: Path) -> None:
     assert result.exit_code == 2
     combined = result.output or result.stderr
     assert "Unsupported report_schema_version: 99" in combined
-    assert "Supported versions: [1]" in combined
+    assert "Supported versions: [1, 2]" in combined

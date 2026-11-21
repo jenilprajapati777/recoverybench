@@ -8,7 +8,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
-[**Run the Double-Charge Demo**](#3-run-the-out-of-the-box-demo) • [**First-User Guide**](docs/FIRST_USER_GUIDE.md) • [**Demo Walkthrough**](docs/DEMO_WALKTHROUGH.md) • [**SDK Guide**](docs/SDK_INTEGRATION_GUIDE.md) • [**Architecture**](docs/ARCHITECTURE.md) • [**Security Model**](docs/SECURITY_MODEL.md) • [**GitHub Issues**](https://github.com/jenilprajapati777/recoverybench/issues)
+[**Run the Double-Charge Demo**](#3-run-the-out-of-the-box-demo) • [**First-User Guide**](docs/FIRST_USER_GUIDE.md) • [**Demo Walkthrough**](docs/DEMO_WALKTHROUGH.md) • [**SDK Guide**](docs/SDK_INTEGRATION_GUIDE.md) • [**MCP Guide**](docs/MCP_INTEGRATION_GUIDE.md) • [**CrewAI Guide**](docs/CREWAI_INTEGRATION_GUIDE.md) • [**AutoGen Guide**](docs/AUTOGEN_INTEGRATION_GUIDE.md) • [**Saga Guide**](docs/MULTI_TOOL_SAGA_GUIDE.md) • [**Architecture**](docs/ARCHITECTURE.md) • [**Security Model**](docs/SECURITY_MODEL.md) • [**GitHub Issues**](https://github.com/jenilprajapati777/recoverybench/issues)
 
 ---
 
@@ -23,7 +23,10 @@ RecoveryBench injects deterministic distributed systems faults into agent tool w
 ### Supported Framework Integrations
 - **Generic Python Callables:** Test arbitrary functions, methods, or classes using `@agent` or `wrap_agent()`.
 - **LangGraph Adapter:** Native integration bridging LangGraph `StateGraph` workflows and `ToolNode` instances.
-- *(Roadmap):* Dedicated adapters for CrewAI, AutoGen, and Model Context Protocol (MCP) tool servers.
+- **CrewAI Adapter:** Native integration bridging CrewAI agent teams and `BaseTool` instances.
+- **AutoGen Adapter:** Native integration bridging Microsoft AutoGen conversable agents and function tools.
+- **Model Context Protocol (MCP) Server:** Stdio JSON-RPC 2.0 server for Claude Desktop, Cursor, and MCP clients.
+- **Multi-Tool Sagas:** Sequential and DAG-based multi-step workflows with LIFO compensation and conservative accounting.
 
 ---
 
@@ -293,9 +296,58 @@ assert result.passed
 assert result.verdict == "PASS"
 ```
 
-### 2. Testing LangGraph StateGraph Agents
+### 2. Testing Asynchronous Agents (`test_agent_async`)
 
-Test real LangGraph workflows using native tool bridging and `ToolNode`:
+RecoveryBench natively supports evaluating asynchronous agent coroutines (`async def`):
+
+```python
+import asyncio
+import recoverybench as rb
+
+
+@rb.agent(id="async_billing_agent")
+async def my_async_agent(task: rb.TaskContext, tool_call: rb.ToolClient) -> rb.AgentResult:
+    key = "tx_stable_key_async_001"
+    for attempt in range(1, 4):
+        try:
+            # tool_call can be awaited asynchronously or called synchronously
+            res = await tool_call("payment_gateway", "charge", task.task_params, key)
+            return rb.AgentResult(success=True, data=res, attempts=attempt)
+        except Exception:
+            await asyncio.sleep(0.01)
+            continue
+    return rb.AgentResult(success=False, error="Exhausted retries")
+
+
+# Run single-line async recovery test
+result = await rb.test_agent_async("payment_timeout_after_commit", my_async_agent)
+assert result.passed
+```
+
+### 3. Creating Custom Mock Tools (`@mock_tool`)
+
+Extend RecoveryBench beyond payments by declaring custom domain services with automatic effect tracking and idempotency:
+
+```python
+import recoverybench as rb
+
+
+@rb.mock_tool(name="inventory_service", action="reserve", mutates=True)
+def reserve_stock(sku: str, quantity: int = 1) -> dict:
+    return {"reserved": True, "sku": sku, "quantity": quantity}
+
+
+# Test your agent with custom mock tools:
+result = rb.test_agent(
+    "payment_timeout_before_commit",
+    my_agent,
+    custom_tools=reserve_stock,
+)
+```
+
+### 4. Testing LangGraph StateGraph Agents
+
+Test real LangGraph workflows using native tool bridging (`create_langchain_payment_tool` or `create_langchain_tool`):
 
 ```python
 import recoverybench as rb

@@ -337,3 +337,108 @@ def test_evaluator_retry_bound_verification() -> None:
     retry_assertion = next(a for a in res.assertions if a.name == "retry_budget")
     assert retry_assertion.passed is False
     assert any("Exceeded retry threshold" in r for r in res.failure_reasons)
+
+
+def test_evaluator_rejects_pass_when_execution_is_provisional() -> None:
+    """Execution with explicit PROVISIONAL finality cannot receive PASS under Tier 4."""
+    evaluator = RecoveryEvaluator()
+    assertions = ScenarioAssertions(
+        expected_side_effects=1,
+        max_duplicate_effects=0,
+        require_stable_idempotency_key=True,
+    )
+    events = [
+        LedgerEvent(
+            event_id=1,
+            run_id="run_prov",
+            scenario_id="scen_prov",
+            tool_name="payment_gateway",
+            action_type="charge",
+            operation_id="op_1",
+            attempt_id="att_1",
+            effect_id="eff_ch_sim_0001",
+            idempotency_key_hash="hash_stable_1234",
+            request_fingerprint="fp_abc",
+            attempt_number=1,
+            execution_status=ExecutionStatus.SUCCESS,
+            commit_status=CommitStatus.COMMITTED,
+            simulated_timestamp="2026-01-01T00:00:00Z",
+            evidence_reference="ch_sim_0001",
+        )
+    ]
+    agent_result = AgentResult(success=True, attempts=1)
+    evaluation = evaluator.evaluate(events, assertions, agent_result, execution_finality="PROVISIONAL")
+    assert evaluation.passed is False
+    assert evaluation.verdict == EvaluationVerdict.INSUFFICIENT_EVIDENCE
+
+
+def test_evaluator_rejects_pass_when_execution_unresolved_interval() -> None:
+    """Unresolved interval cannot receive PASS merely because evaluation completed."""
+    evaluator = RecoveryEvaluator()
+    assertions = ScenarioAssertions(expected_side_effects=1)
+    events = [
+        LedgerEvent(
+            event_id=1,
+            run_id="run_unres",
+            scenario_id="scen_unres",
+            tool_name="order_svc",
+            action_type="create",
+            operation_id="op_1",
+            attempt_id="att_1",
+            attempt_number=1,
+            effect_id="eff_01",
+            request_fingerprint="fp_1",
+            execution_status=ExecutionStatus.SUCCESS,
+            commit_status=CommitStatus.COMMITTED,
+            simulated_timestamp="2026-01-01T00:00:00Z",
+        ),
+        LedgerEvent(
+            event_id=2,
+            run_id="run_unres",
+            scenario_id="scen_unres",
+            tool_name="order_svc",
+            action_type="create",
+            operation_id="op_2",
+            attempt_id="att_2",
+            attempt_number=2,
+            effect_id=None,
+            request_fingerprint="fp_2",
+            execution_status=ExecutionStatus.ERROR,
+            commit_status=CommitStatus.UNCERTAIN,
+            simulated_timestamp="2026-01-01T00:00:01Z",
+            error_type="ToolTimeoutError",
+        ),
+    ]
+    tool_meta = {"order_svc": {"runtime_enforced": True, "max_side_effect_capacity": 1}}
+    agent_result = AgentResult(success=True, attempts=2)
+    evaluation = evaluator.evaluate(events, assertions, agent_result, tool_metadata=tool_meta)
+    assert evaluation.passed is False
+    assert evaluation.verdict == EvaluationVerdict.INSUFFICIENT_EVIDENCE
+
+
+def test_evaluator_rejects_pass_when_worker_timed_out() -> None:
+    """Worker timeout infrastructure failure cannot receive PASS."""
+    evaluator = RecoveryEvaluator()
+    assertions = ScenarioAssertions(expected_side_effects=1)
+    events = [
+        LedgerEvent(
+            event_id=1,
+            run_id="run_wto",
+            scenario_id="scen_wto",
+            tool_name="payment_gateway",
+            action_type="charge",
+            operation_id="op_1",
+            attempt_id="att_1",
+            effect_id="eff_1",
+            request_fingerprint="fp_1",
+            attempt_number=1,
+            execution_status=ExecutionStatus.SUCCESS,
+            commit_status=CommitStatus.COMMITTED,
+            simulated_timestamp="2026-01-01T00:00:00Z",
+            evidence_reference="ch_1",
+        )
+    ]
+    agent_result = AgentResult(success=True, attempts=1)
+    evaluation = evaluator.evaluate(events, assertions, agent_result, infrastructure_status="WORKER_TIMED_OUT")
+    assert evaluation.passed is False
+    assert evaluation.verdict == EvaluationVerdict.INSUFFICIENT_EVIDENCE

@@ -1,7 +1,7 @@
 """Agent adapter interfaces and execution context."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Coroutine, Generator
 from contextlib import contextmanager
 from enum import StrEnum
 from typing import Any
@@ -159,6 +159,48 @@ class AgentResult(BaseModel):
         return self.status == CompletionStatus.UNKNOWN
 
 
+class AwaitableDict(dict[str, Any], Awaitable[dict[str, Any]]):
+    """A dictionary subclass that is also awaitable.
+
+    Allows tool_call(...) to be used both synchronously as a standard dict
+    and asynchronously with 'await tool_call(...)'. When wrapping an unawaited
+    coroutine, awaiting the AwaitableDict executes the coroutine and populates
+    the dictionary with the resolved data.
+    """
+
+    def __init__(
+        self,
+        initial: dict[str, Any] | None = None,
+        coro: Coroutine[Any, Any, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(initial or {})
+        self._coro: Coroutine[Any, Any, dict[str, Any]] | None = coro
+        self._resolved: bool = coro is None
+
+    def __await__(self) -> Generator[Any, None, dict[str, Any]]:
+        async def _resolve() -> dict[str, Any]:
+            if not self._resolved and self._coro is not None:
+                res = await self._coro
+                self.update(res)
+                self._resolved = True
+            return self
+
+        return _resolve().__await__()
+
+    def __getitem__(self, key: str) -> Any:
+        if not self._resolved:
+            raise RuntimeError(
+                "Tool call returned an unawaited asynchronous result. "
+                "You must await the tool call before accessing its dictionary fields: "
+                "'await tool_call(...)'."
+            )
+        return super().__getitem__(key)
+
+    def __del__(self) -> None:
+        if not self._resolved and self._coro is not None:
+            self._coro.close()
+
+
 class ToolClient(ABC):
     """Tool client interface providing tool dispatching to agents."""
 
@@ -170,9 +212,20 @@ class ToolClient(ABC):
         params: dict[str, Any],
         idempotency_key: str | None = None,
         operation_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> AwaitableDict:
         """Dispatch a tool call with explicit operation and idempotency identifiers."""
         raise NotImplementedError
+
+    async def call_async(
+        self,
+        tool_name: str,
+        action: str,
+        params: dict[str, Any],
+        idempotency_key: str | None = None,
+        operation_id: str | None = None,
+    ) -> AwaitableDict:
+        """Asynchronously dispatch a tool call."""
+        return self.call(tool_name, action, params, idempotency_key, operation_id)
 
     @abstractmethod
     def __call__(
@@ -182,7 +235,7 @@ class ToolClient(ABC):
         params: dict[str, Any],
         idempotency_key: str | None = None,
         operation_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> AwaitableDict:
         """Callable dispatch protocol for backwards compatibility."""
         raise NotImplementedError
 
@@ -210,3 +263,11 @@ class AgentAdapter(ABC):
     def run(self, task: TaskContext, tool_call: ToolCaller) -> AgentResult:
         """Execute agent task logic using the provided tool caller."""
         raise NotImplementedError
+
+    async def run_async(self, task: TaskContext, tool_call: ToolCaller) -> AgentResult:
+        """Asynchronously execute agent task logic using the provided tool caller.
+
+        Subclasses implementing asynchronous agent workflows should override this method.
+        The default implementation delegates to synchronous run().
+        """
+        return self.run(task, tool_call)

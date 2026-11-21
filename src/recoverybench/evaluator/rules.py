@@ -1,11 +1,20 @@
 """Deterministic assertion rules for recovery evaluation with supporting ledger evidence."""
 
+from typing import Any
+
 from recoverybench.agent.base import AgentResult, CompletionStatus
+from recoverybench.errors import EvaluationInputValidationError
+from recoverybench.evaluator.accounting import (
+    AccountingResult,
+    TwoLayerEffectAccountingEngine,
+)
 from recoverybench.models import (
     CommitStatus,
     EvaluationAssertion,
     ExecutionStatus,
     LedgerEvent,
+    PrimaryInfrastructureStatus,
+    ReconciliationInfrastructureStatus,
 )
 from recoverybench.scenarios.schema import ScenarioAssertions
 
@@ -13,23 +22,48 @@ from recoverybench.scenarios.schema import ScenarioAssertions
 class RuleEngine:
     """Executes deterministic verification checks over ledger events and gathers supporting evidence."""
 
+    aggregate_outcome: Any = None
+    synthesize_overall_outcome: Any = None
+
     @staticmethod
     def evaluate_side_effects(
         events: list[LedgerEvent],
         assertions: ScenarioAssertions,
+        *,
+        accounting_result: AccountingResult | None = None,
+        tool_registry: Any = None,
     ) -> tuple[EvaluationAssertion, int, int]:
         """Verify expected committed side effects, detect missing effects, and detect duplicates.
 
-        Uses explicit transaction identity:
+        Uses explicit transaction identity and two-layer side-effect accounting:
         - For a given operation_id, multiple distinct committed effect_ids indicate a duplicate side effect.
         - Repeated attempt events referring to the same effect_id are deduplicated and counted as 1 committed effect.
         - Independent operations with identical request fingerprints are never marked as duplicates.
         - Missing operation_id produces an explicit INSUFFICIENT_EVIDENCE classification.
         - Missing effect_id is not counted as a proven committed effect.
         """
+        if accounting_result is None:
+            accounting_result = TwoLayerEffectAccountingEngine.calculate(
+                events,
+                tool_registry=tool_registry,
+                expected_side_effects=assertions.expected_side_effects,
+            )
+
+        bounds = accounting_result.bounds
+        ext_status = accounting_result.external_status
+
         committed_events = [e for e in events if e.commit_status == CommitStatus.COMMITTED]
         committed_ids = [e.event_id for e in committed_events if e.event_id is not None]
-        evidence: list[str] = []
+        evidence: list[str] = [
+            f"Accounting bounds: [{bounds.s_min}, {'infinity' if bounds.is_unbounded else bounds.s_max}] "
+            f"-> external_status='{ext_status}'."
+        ]
+
+        if accounting_result.capacity_breached:
+            evidence.append(
+                f"INTEGRITY VIOLATION: Observed physical effects exceed declared capacity for attempt "
+                f"'{accounting_result.breached_attempt_id}' (c(a) > M(a))."
+            )
 
         # Case 1: If expected_side_effects == 0 and no commits observed
         if assertions.expected_side_effects == 0 and not committed_events:
@@ -39,7 +73,7 @@ class RuleEngine:
                 expected=0,
                 actual=0,
                 message="Zero side-effects committed as expected.",
-                evidence=["No committed events recorded in ledger."],
+                evidence=["No committed events recorded in ledger."] + evidence,
                 event_ids=[],
             )
             return assertion, 0, 0
@@ -244,6 +278,13 @@ class RuleEngine:
             msg = f"Excess side-effects: expected {expected} committed effects, but observed {actual_commits}."
         else:
             msg = f"Exactly {actual_commits} side-effect(s) committed as expected (0 duplicates)."
+
+        if accounting_result.capacity_breached:
+            passed = False
+            msg = (
+                f"Capacity breach integrity violation: attempt '{accounting_result.breached_attempt_id}' "
+                f"committed effects exceeding maximum capacity contract."
+            )
 
         assertion = EvaluationAssertion(
             name="side_effect_count",
@@ -481,27 +522,16 @@ class RuleEngine:
 
             # Subcase B: Unspecified expected side effects (expected_side_effects is None)
             if expected_side_effects is None:
-                if actual_commits == 0:
-                    evidence.append("DISCREPANCY: Agent claimed success, but expected side-effects are unspecified and zero commits occurred.")
-                    return EvaluationAssertion(
-                        name="agent_completion_truth",
-                        passed=False,
-                        expected="verifiable_contract",
-                        actual="insufficient_evidence_unspecified_expectation",
-                        message="Agent claimed success, but expected side-effects are unspecified and no verifiable side effects occurred.",
-                        evidence=evidence,
-                        event_ids=[],
-                    )
-                else:
-                    return EvaluationAssertion(
-                        name="agent_completion_truth",
-                        passed=True,
-                        expected=True,
-                        actual=True,
-                        message=f"Agent reported success and {actual_commits} side-effect(s) were committed.",
-                        evidence=evidence,
-                        event_ids=committed_event_ids or [],
-                    )
+                evidence.append("DISCREPANCY: Expected side-effects are unspecified; cannot verify task completion truth.")
+                return EvaluationAssertion(
+                    name="agent_completion_truth",
+                    passed=False,
+                    expected="verifiable_contract",
+                    actual="insufficient_evidence_unspecified_expectation",
+                    message="Agent claimed success, but expected side-effects are unspecified and cannot be verified without a verifiable contract.",
+                    evidence=evidence,
+                    event_ids=committed_event_ids or [],
+                )
 
             # Subcase C: Positive side-effects expected (expected_side_effects > 0)
             if actual_commits == 0:
@@ -640,3 +670,154 @@ class RuleEngine:
             evidence=evidence,
             event_ids=[e.event_id for e in events if e.event_id is not None],
         )
+
+# Authoritative Evaluation Enums per Approved Phase 4.2 Architecture
+VALID_BEHAVIORAL_VERDICTS: frozenset[str] = frozenset({
+    "PASS",
+    "GENUINE_FAILURE",
+    "INSUFFICIENT_EVIDENCE",
+})
+
+VALID_EXTERNAL_STATUSES: frozenset[str] = frozenset({
+    "EXACT_MATCH",
+    "DUPLICATE_COMMITTED",
+    "MISSING_COMMITS",
+    "CONFIRMED_ABSENT",
+    "UNRESOLVED_INTERVAL",
+    "UNBOUNDED_AMBIGUITY",
+    "AUDIT_OBSERVED_NON_FINAL",
+    "CONTRADICTORY_EVIDENCE",
+})
+
+VALID_PRIMARY_INFRASTRUCTURE_STATUSES: frozenset[str] = frozenset(
+    s.value for s in PrimaryInfrastructureStatus
+)
+
+VALID_RECONCILIATION_INFRASTRUCTURE_STATUSES: frozenset[str] = frozenset(
+    s.value for s in ReconciliationInfrastructureStatus
+)
+
+VALID_EXECUTION_FINALITIES: frozenset[str] = frozenset({
+    "FINAL",
+    "PROVISIONAL",
+})
+
+
+def aggregate_outcome(
+    behavioral_verdict: str,
+    external_status: str,
+    infrastructure_status: str,
+    expected_side_effects: int | None,
+    execution_finality: str,
+    reconciliation_infrastructure_status: str | None = None,
+) -> str:
+    """Authoritative five-tier verdict aggregation function per Phase 4.2 Architecture.
+
+    Tier 1: Test Integrity Breach / Contradictory Evidence / Capacity Breaches (INFRASTRUCTURE_ERROR)
+    Tier 2: Proven Behavioral Failure or Prohibited Side Effects (GENUINE_FAILURE)
+    Tier 3: Uncontained Infrastructure Failure - Primary or Reconciliation (INFRASTRUCTURE_ERROR)
+    Tier 4: Epistemic Ambiguity / Incomplete Evidence / Worker Timeout / Provisional (INSUFFICIENT_EVIDENCE)
+    Tier 5: Verified Full Success (PASS)
+    """
+    # 0. Strict Runtime Type Validation for All Enum Parameters (BEFORE Set Membership)
+    enum_params = [
+        ("behavioral_verdict", behavioral_verdict),
+        ("external_status", external_status),
+        ("infrastructure_status", infrastructure_status),
+        ("execution_finality", execution_finality),
+    ]
+    if reconciliation_infrastructure_status is not None:
+        enum_params.append(("reconciliation_infrastructure_status", reconciliation_infrastructure_status))
+
+    for param_name, param_val in enum_params:
+        if not isinstance(param_val, str):
+            raise EvaluationInputValidationError(
+                f"Invalid parameter type for '{param_name}': {type(param_val).__name__} "
+                f"(must be str, got {type(param_val).__name__}: {param_val!r})"
+            )
+
+    # 1. Strict Enum Value Membership Validation
+    if behavioral_verdict not in VALID_BEHAVIORAL_VERDICTS:
+        raise EvaluationInputValidationError(f"Invalid behavioral_verdict: '{behavioral_verdict}'")
+    if external_status not in VALID_EXTERNAL_STATUSES:
+        raise EvaluationInputValidationError(f"Invalid external_status: '{external_status}'")
+    if infrastructure_status not in VALID_PRIMARY_INFRASTRUCTURE_STATUSES:
+        raise EvaluationInputValidationError(f"Invalid infrastructure_status: '{infrastructure_status}'")
+    if execution_finality not in VALID_EXECUTION_FINALITIES:
+        raise EvaluationInputValidationError(f"Invalid execution_finality: '{execution_finality}'")
+    if (
+        reconciliation_infrastructure_status is not None
+        and reconciliation_infrastructure_status not in VALID_RECONCILIATION_INFRASTRUCTURE_STATUSES
+    ):
+        raise EvaluationInputValidationError(
+            f"Invalid reconciliation_infrastructure_status: '{reconciliation_infrastructure_status}'"
+        )
+
+    # 2. Strict Type & Value Validation for expected_side_effects
+    # Accepted domain: None, or an exact non-negative Python integer (>= 0).
+    # In Python, bool is a subclass of int (isinstance(True, int) is True).
+    # Therefore, exact type checking (type(x) is int) or excluding bool is mandatory.
+    if expected_side_effects is not None:
+        if type(expected_side_effects) is not int:
+            raise EvaluationInputValidationError(
+                f"Invalid expected_side_effects type: {type(expected_side_effects).__name__} "
+                f"(must be exact int or None; booleans, floats like 1.0, and strings are strictly rejected)"
+            )
+        if expected_side_effects < 0:
+            raise EvaluationInputValidationError(
+                f"Invalid expected_side_effects value: {expected_side_effects} (cannot be negative)"
+            )
+
+    # Normalize zero-expectation contradictions
+    if expected_side_effects == 0 and external_status == "MISSING_COMMITS":
+        return "INFRASTRUCTURE_ERROR"
+
+    # Tier 1: Test Integrity Breach / Contradictory Evidence / Capacity Breaches
+    if (
+        infrastructure_status == "INTEGRITY_VIOLATION"
+        or external_status == "CONTRADICTORY_EVIDENCE"
+    ):
+        return "INFRASTRUCTURE_ERROR"
+
+    # Tier 2: Proven Behavioral Failure or Prohibited Side Effects
+    if behavioral_verdict == "GENUINE_FAILURE":
+        return "GENUINE_FAILURE"
+    if external_status == "DUPLICATE_COMMITTED":
+        return "GENUINE_FAILURE"
+    if expected_side_effects is not None and expected_side_effects > 0:
+        if external_status == "MISSING_COMMITS":
+            return "GENUINE_FAILURE"
+        if behavioral_verdict == "PASS" and external_status == "CONFIRMED_ABSENT":
+            return "GENUINE_FAILURE"
+
+    # Tier 3: Uncontained Infrastructure Failure (Primary Containment Breach or Reconciliation Audit Crash)
+    if (
+        infrastructure_status in ("THREAD_LEAKED", "PROCESS_TERMINATED")
+        or reconciliation_infrastructure_status == "RECONCILIATION_FAILED"
+    ):
+        return "INFRASTRUCTURE_ERROR"
+
+    # Tier 4: Epistemic Ambiguity / Incomplete Evidence / Non-Final Audit / Worker Timeout
+    if (
+        execution_finality == "PROVISIONAL"
+        or infrastructure_status == "WORKER_TIMED_OUT"
+        or external_status in ("UNRESOLVED_INTERVAL", "UNBOUNDED_AMBIGUITY", "AUDIT_OBSERVED_NON_FINAL")
+        or behavioral_verdict == "INSUFFICIENT_EVIDENCE"
+        or expected_side_effects is None
+    ):
+        return "INSUFFICIENT_EVIDENCE"
+
+    # Tier 5: Verified Full Success
+    is_infra_clean = (infrastructure_status == "CLEAN") and (reconciliation_infrastructure_status in (None, "CLEAN"))
+    if behavioral_verdict == "PASS" and is_infra_clean:
+        if expected_side_effects is not None and expected_side_effects > 0 and external_status == "EXACT_MATCH":
+            return "PASS"
+        if expected_side_effects == 0 and external_status in ("CONFIRMED_ABSENT", "EXACT_MATCH"):
+            return "PASS"
+
+    return "INSUFFICIENT_EVIDENCE"
+
+
+# Bind static methods to RuleEngine
+RuleEngine.aggregate_outcome = staticmethod(aggregate_outcome)
+RuleEngine.synthesize_overall_outcome = staticmethod(aggregate_outcome)

@@ -6,13 +6,16 @@ Provides first-class integration with LangGraph (by LangChain):
 - Evaluates recovery resilience, retry behavior, and idempotency key preservation.
 """
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Annotated, Any, TypedDict
 
+from pydantic import BaseModel
+
 try:
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-    from langchain_core.tools import BaseTool, tool
+    from langchain_core.tools import BaseTool, StructuredTool, tool
     from langgraph.graph import END, START, StateGraph
     from langgraph.graph.message import add_messages
     from langgraph.graph.state import CompiledStateGraph
@@ -22,6 +25,7 @@ try:
 except ImportError:  # pragma: no cover
     LANGGRAPH_AVAILABLE = False
     BaseTool = Any  # type: ignore[misc, assignment]
+    StructuredTool = Any  # type: ignore[misc, assignment]
     CompiledStateGraph = Any  # type: ignore[misc, assignment]
     add_messages = Any  # type: ignore
     tool = Any  # type: ignore
@@ -34,8 +38,23 @@ except ImportError:  # pragma: no cover
     ToolNode = Any  # type: ignore
     tools_condition = Any  # type: ignore
 
-from recoverybench.agent.base import AgentAdapter, AgentResult, TaskContext, ToolCaller
+from recoverybench.agent.base import (
+    AgentAdapter,
+    AgentResult,
+    CompletionStatus,
+    TaskContext,
+    ToolCaller,
+)
 from recoverybench.errors import ConfigurationError
+
+
+class GenericToolInput(BaseModel):
+    """Input schema allowing arbitrary keyword arguments for generic tools."""
+
+    model_config = {"extra": "allow"}
+    params: dict[str, Any] | None = None
+    idempotency_key: str | None = None
+    operation_id: str | None = None
 
 
 def create_langchain_payment_tool(tool_call: ToolCaller) -> Any:
@@ -69,6 +88,59 @@ def create_langchain_payment_tool(tool_call: ToolCaller) -> Any:
         return json.dumps(result)
 
     return payment_gateway_charge
+
+
+def create_langchain_tool(
+    tool_name: str,
+    action: str,
+    tool_call: ToolCaller,
+    *,
+    description: str | None = None,
+    args_schema: type[BaseModel] | None = None,
+) -> Any:
+    """Create a generic LangChain tool that dispatches to RecoveryBench's tool_call callback."""
+    if not LANGGRAPH_AVAILABLE:  # pragma: no cover
+        raise ConfigurationError(
+            "LangGraph is not installed. Install with 'pip install recoverybench[langgraph]'."
+        )
+
+    clean_name = f"{tool_name}_{action}".replace("-", "_")
+    tool_desc = description or f"Execute {action} on {tool_name}."
+
+    def _sync_run(**kwargs: Any) -> str:
+        params = dict(kwargs.pop("params", None) or {})
+        idempotency_key = kwargs.pop("idempotency_key", None)
+        operation_id = kwargs.pop("operation_id", None)
+        params.update(kwargs)
+        try:
+            result = tool_call(tool_name, action, params, idempotency_key, operation_id)
+        except TypeError:
+            result = tool_call(tool_name, action, params, idempotency_key)
+        return result if isinstance(result, str) else json.dumps(result)
+
+    async def _async_run(**kwargs: Any) -> str:
+        params = dict(kwargs.pop("params", None) or {})
+        idempotency_key = kwargs.pop("idempotency_key", None)
+        operation_id = kwargs.pop("operation_id", None)
+        params.update(kwargs)
+        try:
+            raw = tool_call(tool_name, action, params, idempotency_key, operation_id)
+        except TypeError:
+            raw = tool_call(tool_name, action, params, idempotency_key)
+        if asyncio.iscoroutine(raw) or hasattr(raw, "__await__"):
+            result = await raw
+        else:
+            result = raw
+        return result if isinstance(result, str) else json.dumps(result)
+
+    schema = args_schema or GenericToolInput
+    return StructuredTool.from_function(
+        func=_sync_run,
+        coroutine=_async_run,
+        name=clean_name,
+        description=tool_desc,
+        args_schema=schema,
+    )
 
 
 def bridge_tools(tool_call: ToolCaller, tool_names: list[str] | None = None) -> list[Any]:
@@ -227,13 +299,26 @@ def build_idempotent_langgraph_agent(
 
 
 class LangGraphAdapter(AgentAdapter):
-    """Adapter bridging LangGraph CompiledStateGraph applications to RecoveryBench."""
+    """Adapter bridging LangGraph CompiledStateGraph applications to RecoveryBench.
+
+    Supports domain-independent, configurable graph workflows:
+    - graph_factory: callable accepting list[BaseTool] and returning a CompiledStateGraph,
+      OR a pre-compiled CompiledStateGraph directly.
+    - tools_factory: optional callable(tool_call: ToolCaller) -> list[BaseTool]. Defaults to bridge_tools.
+    - input_factory: optional callable(task: TaskContext) -> dict[str, Any].
+    - result_extractor: optional callable(final_state: dict[str, Any], task: TaskContext) -> AgentResult.
+    - success_evaluator: optional callable(final_state: dict[str, Any]) -> bool.
+    """
 
     def __init__(
         self,
-        graph_factory: Callable[[list[Any]], Any],
+        graph_factory: Callable[[list[Any]], Any] | Any,
         agent_id: str = "langgraph_agent",
+        *,
+        tools_factory: Callable[[ToolCaller], list[Any]] | None = None,
         input_factory: Callable[[TaskContext], dict[str, Any]] | None = None,
+        result_extractor: Callable[[dict[str, Any], TaskContext], AgentResult] | None = None,
+        success_evaluator: Callable[[dict[str, Any]], bool] | None = None,
     ) -> None:
         if not LANGGRAPH_AVAILABLE:  # pragma: no cover
             raise ConfigurationError(
@@ -241,25 +326,40 @@ class LangGraphAdapter(AgentAdapter):
             )
         self.graph_factory = graph_factory
         self.agent_id = agent_id
+        self.tools_factory = tools_factory
         self.input_factory = input_factory
+        self.result_extractor = result_extractor
+        self.success_evaluator = success_evaluator
+
+    def _resolve_graph(self, tool_call: ToolCaller) -> Any:
+        if callable(self.graph_factory):
+            tools = self.tools_factory(tool_call) if self.tools_factory else bridge_tools(tool_call)
+            return self.graph_factory(tools)
+        return self.graph_factory
+
+    def _build_initial_state(self, task: TaskContext) -> dict[str, Any]:
+        if self.input_factory:
+            return self.input_factory(task)
+        # Generic input state: provides task_params and standard message if HumanMessage available
+        params = dict(task.task_params)
+        state: dict[str, Any] = {
+            "task": params,
+            "scenario_id": task.scenario_id,
+            "operation_id": task.operation_id,
+            "attempts": 0,
+        }
+        if LANGGRAPH_AVAILABLE:
+            state["messages"] = [HumanMessage(content=f"Execute task for scenario {task.scenario_id}")]
+        return state
 
     def run(self, task: TaskContext, tool_call: ToolCaller) -> AgentResult:
-        """Bridge RecoveryBench tools into LangGraph and execute the graph workflow."""
-        bridged_tools = bridge_tools(tool_call)
-        compiled_graph = self.graph_factory(bridged_tools)
-
-        # Build initial input state
-        if self.input_factory:
-            initial_state = self.input_factory(task)
-        else:
-            initial_state = {
-                "messages": [HumanMessage(content=f"Process payment for scenario {task.scenario_id}")],
-                "attempts": 0,
-            }
+        """Synchronously execute the LangGraph workflow."""
+        compiled_graph = self._resolve_graph(tool_call)
+        initial_state = self._build_initial_state(task)
 
         try:
             final_state = compiled_graph.invoke(initial_state)
-            return self._parse_langgraph_result(final_state)
+            return self._parse_langgraph_result(final_state, task)
         except Exception as exc:
             return AgentResult(
                 success=False,
@@ -267,35 +367,115 @@ class LangGraphAdapter(AgentAdapter):
                 status_message=f"LangGraph execution crashed: {exc}",
             )
 
-    def _parse_langgraph_result(self, state: dict[str, Any]) -> AgentResult:
-        """Extract AgentResult metrics and status from the final LangGraph state."""
-        messages = state.get("messages", [])
-        attempts = int(state.get("attempts", 1))
+    async def run_async(self, task: TaskContext, tool_call: ToolCaller) -> AgentResult:
+        """Asynchronously execute the LangGraph workflow using ainvoke if available."""
+        compiled_graph = self._resolve_graph(tool_call)
+        initial_state = self._build_initial_state(task)
 
-        # Check for confirmed charge flag in state
-        confirmed = bool(state.get("charge_confirmed", False))
+        try:
+            if hasattr(compiled_graph, "ainvoke") and callable(compiled_graph.ainvoke):
+                final_state = await compiled_graph.ainvoke(initial_state)
+            else:
+                final_state = compiled_graph.invoke(initial_state)
+            return self._parse_langgraph_result(final_state, task)
+        except Exception as exc:
+            return AgentResult(
+                success=False,
+                error=f"LangGraph execution error: {exc}",
+                status_message=f"LangGraph execution crashed: {exc}",
+            )
+
+    def _parse_langgraph_result(self, state: dict[str, Any], task: TaskContext) -> AgentResult:
+        """Extract AgentResult metrics and status from the final LangGraph state."""
+        # 1. Custom developer-provided result extractor
+        if self.result_extractor:
+            custom_res = self.result_extractor(state, task)
+            if isinstance(custom_res, AgentResult):
+                return custom_res
+            if isinstance(custom_res, dict):
+                return AgentResult(**custom_res)
+            return AgentResult(success=bool(custom_res), data={"state": state})
+
+        # 2. Custom developer-provided success evaluator
+        if self.success_evaluator:
+            success = bool(self.success_evaluator(state))
+            return AgentResult(
+                success=success,
+                status=CompletionStatus.SUCCEEDED if success else CompletionStatus.FAILED,
+                data={"final_state_keys": list(state.keys())},
+                status_message="Evaluated by custom success_evaluator",
+            )
+
+        # 3. Generic State Inspection (Domain-Independent)
+        # Check for explicit completion indicators in state
+        if "success" in state and isinstance(state["success"], bool):
+            success = state["success"]
+            st = CompletionStatus.SUCCEEDED if success else CompletionStatus.FAILED
+            return AgentResult(
+                success=success,
+                status=st,
+                data=state,
+                status_message=str(state.get("status_message", "Completed with state.success")),
+            )
+
+        if "status" in state and isinstance(state["status"], str):
+            up = state["status"].strip().upper()
+            if up in ("SUCCEEDED", "SUCCESS", "PASS", "COMPLETED"):
+                return AgentResult(
+                    success=True,
+                    status=CompletionStatus.SUCCEEDED,
+                    data=state,
+                    status_message=f"Completed with status '{state['status']}'",
+                )
+            elif up in ("FAILED", "FAILURE", "ERROR"):
+                return AgentResult(
+                    success=False,
+                    status=CompletionStatus.FAILED,
+                    data=state,
+                    status_message=f"Failed with status '{state['status']}'",
+                )
+
+        # 4. Backward-compatible reference fallback for payment agents
+        if "charge_confirmed" in state:
+            confirmed = bool(state["charge_confirmed"])
+            messages = state.get("messages", [])
+            last_message = messages[-1] if messages else None
+            last_content = getattr(last_message, "content", "") if last_message else ""
+            tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
+            attempts = max(1, len(tool_messages) if tool_messages else int(state.get("attempts", 1)))
+            return AgentResult(
+                success=confirmed,
+                data={"final_state_keys": list(state.keys()), "message_count": len(messages)},
+                error=None if confirmed else (last_content or "Payment charge not confirmed"),
+                attempts=attempts,
+                status_message=last_content or ("Payment succeeded" if confirmed else "Payment failed"),
+            )
+
+        # 5. Default generic message inspection if state contains messages
+        messages = state.get("messages", [])
+        tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
+        attempts = max(1, len(tool_messages) if tool_messages else int(state.get("attempts", 1)))
         last_message = messages[-1] if messages else None
         last_content = getattr(last_message, "content", "") if last_message else ""
 
-        # Determine success from messages if not explicitly flagged
-        if not confirmed and last_message:
-            confirmed = "confirmed" in str(last_content).lower() or "succeeded" in str(last_content).lower()
+        # If any tool message reported an unhandled error on the final turn, consider failed
+        if last_message and isinstance(last_message, ToolMessage) and getattr(last_message, "status", "") == "error":
+            return AgentResult(
+                success=False,
+                status=CompletionStatus.FAILED,
+                error=f"Graph ended with tool error: {last_content}",
+                attempts=attempts,
+                status_message=f"Tool error: {last_content}",
+            )
 
-        # Count tool invocations from messages
-        tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
-        if tool_messages and attempts <= 1:
-            attempts = len(tool_messages)
-
-        error_message = None
-        if not confirmed:
-            error_message = last_content or "LangGraph workflow terminated without confirmation"
-
+        # Fallback when no explicit indicator is provided
         return AgentResult(
-            success=confirmed,
+            success=False,
+            status=CompletionStatus.UNKNOWN,
             data={"final_state_keys": list(state.keys()), "message_count": len(messages)},
-            error=error_message,
-            attempts=max(1, attempts),
-            status_message=last_content or ("Payment succeeded" if confirmed else "Payment failed"),
+            error="LangGraph state lacks explicit 'success', 'status', or custom result_extractor",
+            attempts=attempts,
+            status_message="Ambiguous graph completion: state lacks completion indicator",
         )
 
 

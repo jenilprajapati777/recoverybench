@@ -21,6 +21,7 @@ from recoverybench.agent.idempotent import IdempotentPaymentAgent
 from recoverybench.agent.naive import NaivePaymentAgent
 from recoverybench.engine.runner import ExecutionEngine
 from recoverybench.errors import (
+    IncompatibleSchemaVersionError,
     InfrastructureError,
     ReportValidationError,
 )
@@ -37,6 +38,7 @@ from recoverybench.reporting.json_reporter import (
 )
 from recoverybench.reporting.schema import (
     SUPPORTED_REPORT_SCHEMA_VERSIONS,
+    EventReport,
     InjectedFaultReport,
     ReportValidator,
     SideEffectSafety,
@@ -527,7 +529,7 @@ def test_report_schema_version_validation_invalid_types(timeout_after_scenario: 
 
 def test_report_schema_version_unsupported_versions(timeout_after_scenario: ScenarioModel) -> None:
     """Verify that unsupported integer versions fail closed citing supported versions."""
-    assert SUPPORTED_REPORT_SCHEMA_VERSIONS == frozenset({1})
+    assert SUPPORTED_REPORT_SCHEMA_VERSIONS == frozenset({1, 2})
     ledger = InMemoryLedger()
     tools = ToolRegistry()
     tools.register(MockPaymentService())
@@ -537,7 +539,7 @@ def test_report_schema_version_unsupported_versions(timeout_after_scenario: Scen
     result = engine.run(timeout_after_scenario, agent, run_id="run_unsupported_vers")
     report_dict = result.to_report_dict()
 
-    for unsupported_ver in [0, 2, -1, 99]:
+    for unsupported_ver in [0, 3, -1, 99]:
         bad_dict = dict(report_dict)
         bad_dict["report_schema_version"] = unsupported_ver
 
@@ -546,7 +548,7 @@ def test_report_schema_version_unsupported_versions(timeout_after_scenario: Scen
 
         err_text = str(exc_info.value)
         assert f"Unsupported report_schema_version: {unsupported_ver}" in err_text
-        assert "Supported versions: [1]" in err_text
+        assert "Supported versions: [1, 2]" in err_text
 
 
 def test_deterministic_serialization(timeout_after_scenario: ScenarioModel) -> None:
@@ -1264,7 +1266,7 @@ def test_event_report_rejects_unknown_commit_status_value(
         with pytest.raises(ReportValidationError) as exc:
             ReportValidator.validate_dict(bad_dict)
         assert "Invalid commit_status" in str(exc.value)
-        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE']" in str(exc.value)
+        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE', 'UNCERTAIN']" in str(exc.value)
 
 
 def test_report_rejects_verified_safe_with_incomplete_committed_event_identity(
@@ -1373,7 +1375,7 @@ def test_valid_behavior_legitimate_duplicate_commit_failure(
 
 def test_injected_fault_report_accepts_valid_commit_statuses() -> None:
     """InjectedFaultReport accepts all valid commit statuses as str and CommitStatus enum."""
-    for valid_status in ["COMMITTED", "ABORTED", "NOT_APPLICABLE"]:
+    for valid_status in ["COMMITTED", "ABORTED", "NOT_APPLICABLE", "UNCERTAIN"]:
         report = InjectedFaultReport(
             attempt_number=1,
             tool_name="payment_service",
@@ -1383,7 +1385,12 @@ def test_injected_fault_report_accepts_valid_commit_statuses() -> None:
         )
         assert report.commit_status == valid_status
 
-    for enum_status in [CommitStatus.COMMITTED, CommitStatus.ABORTED, CommitStatus.NOT_APPLICABLE]:
+    for enum_status in [
+        CommitStatus.COMMITTED,
+        CommitStatus.ABORTED,
+        CommitStatus.NOT_APPLICABLE,
+        CommitStatus.UNCERTAIN,
+    ]:
         report = InjectedFaultReport(
             attempt_number=1,
             tool_name="payment_service",
@@ -1392,6 +1399,79 @@ def test_injected_fault_report_accepts_valid_commit_statuses() -> None:
             timestamp="2026-01-01T00:00:00Z",
         )
         assert report.commit_status == enum_status.value
+
+
+def test_uncertain_commit_status_accepted_in_events_and_faults(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """Explicitly verify that CommitStatus.UNCERTAIN is accepted across report schema and validator."""
+    # 1. InjectedFaultReport accepts UNCERTAIN as string and enum
+    fault_str = InjectedFaultReport(
+        attempt_number=1,
+        tool_name="payment_service",
+        action_type="charge",
+        commit_status="UNCERTAIN",
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    assert fault_str.commit_status == "UNCERTAIN"
+
+    fault_enum = InjectedFaultReport(
+        attempt_number=1,
+        tool_name="payment_service",
+        action_type="charge",
+        commit_status=CommitStatus.UNCERTAIN,
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    assert fault_enum.commit_status == "UNCERTAIN"
+
+    # 2. EventReport accepts UNCERTAIN as string and enum
+    event_str = EventReport(
+        event_id=1,
+        operation_id="op_1",
+        attempt_id="att_1",
+        attempt_number=1,
+        tool_name="payment_gateway",
+        action_type="charge",
+        execution_status="TIMEOUT",
+        commit_status="UNCERTAIN",
+        effect_id=None,
+        idempotency_key_hash="hash_1",
+        request_fingerprint="fp_1",
+        simulated_timestamp="2026-01-01T00:00:00Z",
+    )
+    assert event_str.commit_status == "UNCERTAIN"
+
+    event_enum = EventReport(
+        event_id=1,
+        operation_id="op_1",
+        attempt_id="att_1",
+        attempt_number=1,
+        tool_name="payment_gateway",
+        action_type="charge",
+        execution_status="TIMEOUT",
+        commit_status=CommitStatus.UNCERTAIN,
+        effect_id=None,
+        idempotency_key_hash="hash_1",
+        request_fingerprint="fp_1",
+        simulated_timestamp="2026-01-01T00:00:00Z",
+    )
+    assert event_enum.commit_status == "UNCERTAIN"
+
+    # 3. ReportValidator accepts UNCERTAIN in event and fault
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+    result = engine.run(timeout_after_scenario, IdempotentPaymentAgent())
+    report_dict = result.to_report_dict()
+
+    report_dict["fault_injection"]["injected_faults"][0]["commit_status"] = "UNCERTAIN"
+    report_dict["events"][1]["commit_status"] = "UNCERTAIN"
+    report_dict["events"][1]["effect_id"] = None
+
+    validated = ReportValidator.validate_dict(report_dict)
+    assert validated.fault_injection.injected_faults[0].commit_status == "UNCERTAIN"
+    assert validated.events[1].commit_status == "UNCERTAIN"
 
 
 def test_injected_fault_report_rejects_unknown_commit_status() -> None:
@@ -1406,7 +1486,7 @@ def test_injected_fault_report_rejects_unknown_commit_status() -> None:
                 timestamp="2026-01-01T00:00:00Z",
             )
         assert "Invalid commit_status" in str(exc.value)
-        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE']" in str(exc.value)
+        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE', 'UNCERTAIN']" in str(exc.value)
 
 
 def test_injected_fault_report_rejects_invalid_commit_status_types() -> None:
@@ -1443,7 +1523,7 @@ def test_report_validator_rejects_injected_fault_with_unknown_commit_status(
         with pytest.raises(ReportValidationError) as exc:
             ReportValidator.validate_dict(bad_dict)
         assert "Invalid commit_status" in str(exc.value)
-        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE']" in str(exc.value)
+        assert "['ABORTED', 'COMMITTED', 'NOT_APPLICABLE', 'UNCERTAIN']" in str(exc.value)
 
 
 # =============================================================================
@@ -1581,3 +1661,172 @@ def test_valid_multiple_committed_events_distinct_operation_ids(
     assert validated_model.side_effects.duplicate_count == 0
     assert validated_model.side_effects.safety_status == SideEffectSafety.VERIFIED_SAFE
     assert validated_model.side_effects.actual_count == 2
+
+
+# =============================================================================
+# 4. SCHEMA V2 CONTRACT AND LOSSLESS V1 PROJECTION (ADR-004 Section 7 & 9)
+# =============================================================================
+
+
+def test_schema_v2_generation_and_validation(timeout_after_scenario: ScenarioModel) -> None:
+    """Verify that Schema v2 report generation produces valid v2 dictionary and model."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_schema_v2_valid")
+
+    v2_dict = result.to_report_dict(schema_version=2)
+    assert v2_dict["report_schema_version"] == 2
+    assert "behavioral_verdict" in v2_dict["outcome"]
+    assert "overall_outcome" in v2_dict["outcome"]
+    assert "side_effect_status" in v2_dict["outcome"]
+    assert "primary_infrastructure_status" in v2_dict["outcome"]
+    assert "execution_finality" in v2_dict["outcome"]
+    assert "bounds" in v2_dict["side_effects"]
+    assert "uncertain_count" in v2_dict["side_effects"]
+
+    # Validate Schema v2 report
+    model_v2 = ReportValidator.validate_dict(v2_dict)
+    assert model_v2.report_schema_version == 2
+    assert model_v2.outcome.behavioral_verdict == "PASS"
+    assert model_v2.outcome.overall_outcome == "PASS"
+    assert model_v2.outcome.execution_finality == "FINAL"
+    assert model_v2.side_effects.bounds == [1, 1]
+    assert model_v2.side_effects.uncertain_count == 0
+
+
+def test_schema_v2_lossless_projection_success(timeout_after_scenario: ScenarioModel) -> None:
+    """Verify that a clean Schema v2 run projects losslessly to Schema v1."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_v2_to_v1_lossless")
+
+    v1_dict = JSONReporter.generate_report_dict(result, schema_version=1)
+    assert v1_dict["report_schema_version"] == 1
+    assert "behavioral_verdict" not in v1_dict["outcome"]
+    assert "overall_outcome" not in v1_dict["outcome"]
+    assert "bounds" not in v1_dict["side_effects"]
+    assert "uncertain_count" not in v1_dict["side_effects"]
+    assert v1_dict["outcome"]["verdict"] == "PASS"
+    assert v1_dict["side_effects"]["actual_count"] == 1
+
+    # Ensure projected v1 report validates against Schema v1
+    model_v1 = ReportValidator.validate_dict(v1_dict)
+    assert model_v1.report_schema_version == 1
+    assert model_v1.outcome.verdict == "PASS"
+
+
+def test_schema_v2_lossless_projection_rejection_c1_uncertain(timeout_after_scenario: ScenarioModel) -> None:
+    """Verify predicate rejection C1: non-v1 commit_status UNCERTAIN cannot project to v1."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_c1_rejection")
+    result.events[0].commit_status = CommitStatus.UNCERTAIN
+
+    with pytest.raises(IncompatibleSchemaVersionError) as exc_info:
+        JSONReporter.generate_report_dict(result, schema_version=1)
+    assert "C1" in str(exc_info.value)
+    assert "UNCERTAIN" in str(exc_info.value)
+
+
+def test_schema_v2_lossless_projection_rejection_c2_non_degenerate_bounds(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """Verify predicate rejection C2: non-degenerate bounds [1, 2] cannot project to v1."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_c2_rejection")
+    result.evaluation.bounds = [1, 2]
+
+    with pytest.raises(IncompatibleSchemaVersionError) as exc_info:
+        JSONReporter.generate_report_dict(result, schema_version=1)
+    assert "C2" in str(exc_info.value)
+
+
+def test_schema_v2_lossless_projection_rejection_c4_provisional(timeout_after_scenario: ScenarioModel) -> None:
+    """Verify predicate rejection C4: provisional execution finality cannot project to v1."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_c4_rejection")
+    result.evaluation.execution_finality = "PROVISIONAL"
+
+    with pytest.raises(IncompatibleSchemaVersionError) as exc_info:
+        JSONReporter.generate_report_dict(result, schema_version=1)
+    assert "C4" in str(exc_info.value)
+    assert "PROVISIONAL" in str(exc_info.value)
+
+
+def test_schema_v2_lossless_projection_rejection_c7_split_verdict(timeout_after_scenario: ScenarioModel) -> None:
+    """Verify predicate rejection C7: split verdicts (lucky agent) cannot project to v1."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_c7_rejection")
+    result.evaluation.behavioral_verdict = "GENUINE_FAILURE"
+    result.evaluation.overall_outcome = "PASS"
+
+    with pytest.raises(IncompatibleSchemaVersionError) as exc_info:
+        JSONReporter.generate_report_dict(result, schema_version=1)
+    assert "C7" in str(exc_info.value)
+    assert "Split verdict" in str(exc_info.value)
+
+
+def test_schema_v2_validation_rejects_verdict_mismatch(timeout_after_scenario: ScenarioModel) -> None:
+    """Verify that in Schema v2, outcome.verdict must match outcome.overall_outcome."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_v2_mismatch")
+    v2_dict = result.to_report_dict(schema_version=2)
+    v2_dict["outcome"]["verdict"] = "PASS"
+    v2_dict["outcome"]["overall_outcome"] = "GENUINE_FAILURE"
+
+    with pytest.raises(ReportValidationError) as exc_info:
+        ReportValidator.validate_dict(v2_dict)
+    assert "must match outcome.overall_outcome" in str(exc_info.value)
+
+
+def test_schema_v2_validation_preserves_dual_infrastructure_containment(
+    timeout_after_scenario: ScenarioModel,
+) -> None:
+    """Verify Invariant 6: primary_infrastructure_status failure enforces INFRASTRUCTURE_ERROR."""
+    ledger = InMemoryLedger()
+    tools = ToolRegistry()
+    tools.register(MockPaymentService())
+    engine = ExecutionEngine(ledger=ledger, tool_registry=tools)
+
+    agent = IdempotentPaymentAgent()
+    result = engine.run(timeout_after_scenario, agent, run_id="run_v2_infra_breach")
+    v2_dict = result.to_report_dict(schema_version=2)
+    v2_dict["outcome"]["primary_infrastructure_status"] = "PROCESS_TERMINATED"
+    v2_dict["outcome"]["overall_outcome"] = "PASS"
+    v2_dict["outcome"]["verdict"] = "PASS"
+
+    with pytest.raises(ReportValidationError) as exc_info:
+        ReportValidator.validate_dict(v2_dict)
+    assert "Overall outcome must be INFRASTRUCTURE_ERROR" in str(exc_info.value)

@@ -52,6 +52,15 @@ langgraph = [
     "langgraph>=1.0.0",
     "langchain-core>=1.0.0",
 ]
+crewai = [
+    "crewai>=0.28.0",
+]
+autogen = [
+    "autogen-agentchat>=0.2.0",
+]
+all = [
+    "recoverybench[langgraph,crewai,autogen]",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",

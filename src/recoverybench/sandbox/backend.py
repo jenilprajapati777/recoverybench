@@ -22,7 +22,12 @@ from recoverybench.agent.base import (
     TaskContext,
     ToolClient,
 )
-from recoverybench.errors import ConfigurationError, InfrastructureError, ToolError
+from recoverybench.errors import (
+    ConfigurationError,
+    InfrastructureError,
+    ProcessTaintedError,
+    ToolError,
+)
 from recoverybench.sandbox.config import (
     MANDATORY_CONTAINER_ENV,
     SandboxConfig,
@@ -42,6 +47,26 @@ class IsolationMode(StrEnum):
 
     ISOLATED = "isolated"
     TRUSTED = "trusted"
+
+
+_PROCESS_TAINTED: bool = False
+
+
+def is_process_tainted() -> bool:
+    """Return whether the current host process has been marked tainted by a thread leak."""
+    return _PROCESS_TAINTED
+
+
+def taint_process() -> None:
+    """Mark the host process as tainted due to an uncooperative or leaked worker thread."""
+    global _PROCESS_TAINTED
+    _PROCESS_TAINTED = True
+
+
+def reset_process_taint() -> None:
+    """Reset the process tainted flag (used in test setup/teardown)."""
+    global _PROCESS_TAINTED
+    _PROCESS_TAINTED = False
 
 
 class ExecutionBackend(ABC):
@@ -67,6 +92,16 @@ class ExecutionBackend(ABC):
     ) -> AgentResult:
         """Execute the agent in this environment and return the standardized result."""
 
+    @abstractmethod
+    async def run_async(
+        self,
+        agent: AgentAdapter | AgentSpec | Callable[..., Any],
+        task_context: TaskContext,
+        tool_client: ToolClient,
+        timeout_seconds: float = 15.0,
+    ) -> AgentResult:
+        """Asynchronously execute the agent in this environment and return the standardized result."""
+
 
 class InProcessExecutionBackend(ExecutionBackend):
     """Executes the agent in the host Python process.
@@ -90,6 +125,9 @@ class InProcessExecutionBackend(ExecutionBackend):
         tool_client: ToolClient,
         timeout_seconds: float = 15.0,
     ) -> AgentResult:
+        if is_process_tainted():
+            raise ProcessTaintedError("Host process tainted by leaked worker thread; restart required")
+
         # Emit explicit, un-ignorable security advisory
         sys.stderr.write(
             "[SECURITY ADVISORY] Running agent in TRUSTED / NOT ISOLATED mode.\n"
@@ -107,6 +145,34 @@ class InProcessExecutionBackend(ExecutionBackend):
             resolved_adapter = wrap_agent(agent)
 
         res = resolved_adapter.run(task_context, tool_client)
+        return res
+
+    async def run_async(
+        self,
+        agent: AgentAdapter | AgentSpec | Callable[..., Any],
+        task_context: TaskContext,
+        tool_client: ToolClient,
+        timeout_seconds: float = 15.0,
+    ) -> AgentResult:
+        if is_process_tainted():
+            raise ProcessTaintedError("Host process tainted by leaked worker thread; restart required")
+
+        # Emit explicit, un-ignorable security advisory
+        sys.stderr.write(
+            "[SECURITY ADVISORY] Running agent in TRUSTED / NOT ISOLATED mode.\n"
+            "This execution backend does not block outbound network traffic or restrict host filesystem access.\n"
+        )
+        sys.stderr.flush()
+
+        resolved_adapter: AgentAdapter
+        if isinstance(agent, AgentSpec):
+            resolved_adapter = self._load_agent_from_spec(agent)
+        elif isinstance(agent, AgentAdapter):
+            resolved_adapter = agent
+        else:
+            resolved_adapter = wrap_agent(agent)
+
+        res = await resolved_adapter.run_async(task_context, tool_client)
         return res
 
     def _load_agent_from_spec(self, spec: AgentSpec) -> AgentAdapter:
@@ -135,6 +201,18 @@ class InProcessExecutionBackend(ExecutionBackend):
         if callable(entrypoint):
             return wrap_agent(entrypoint, agent_id=spec.name)
         raise ConfigurationError(f"Loaded entrypoint '{spec.entrypoint}' is neither an AgentAdapter nor a callable")
+
+
+class ProcessIsolatedExecutionBackend(InProcessExecutionBackend):
+    """Executes the agent in-process while isolating uncooperative tools in child OS processes."""
+
+    @property
+    def mode(self) -> IsolationMode:
+        return IsolationMode.ISOLATED
+
+    @property
+    def is_isolated(self) -> bool:
+        return True
 
 
 class DockerExecutionBackend(ExecutionBackend):
@@ -296,6 +374,20 @@ class DockerExecutionBackend(ExecutionBackend):
             # Guaranteed container removal & workspace cleanup
             self.docker_client.kill_and_remove(container_name)
             WorkspaceStaging.cleanup_workspace(staged_dir)
+
+    async def run_async(
+        self,
+        agent: AgentAdapter | AgentSpec | Callable[..., Any],
+        task_context: TaskContext,
+        tool_client: ToolClient,
+        timeout_seconds: float = 15.0,
+    ) -> AgentResult:
+        """Asynchronously execute in Docker sandbox."""
+        raise ConfigurationError(
+            "Isolated Docker container execution currently only supports synchronous agents. "
+            "To evaluate asynchronous agents ('async def'), use in-process trusted execution ('--isolation trusted') "
+            "with 'await test_agent_async(...)'. Containerized asynchronous IPC execution is scheduled for a future release."
+        )
 
     def _build_safe_env(self, spec: AgentSpec) -> dict[str, str]:
         """Construct a strictly filtered environment dictionary without host secrets or reserved variables."""

@@ -2,7 +2,7 @@
 
 > **"Test the failure before production does."**
 
-This guide covers integrating autonomous AI agents with RecoveryBench using the **Reusable Agent Integration Interface**, **Generic Callable Adapters**, **LangGraph Framework Adapter**, and the high-level **Developer SDK**.
+This guide covers integrating autonomous AI agents with RecoveryBench using the **Reusable Agent Integration Interface**, **Generic Callable Adapters**, **LangGraph Framework Adapter**, **CrewAI Adapter**, **AutoGen Adapter**, **Model Context Protocol (MCP) Server**, and the high-level **Developer SDK**.
 
 ---
 
@@ -1053,7 +1053,7 @@ recoverybench validate-report reports/payment_timeout_after_commit_report.json
     "validation_failure": false,
     "verdict": "PASS"
   },
-  "recoverybench_version": "0.1.0",
+  "recoverybench_version": "0.2.0",
   "report_schema_version": 1,
   "run_id": "run_demo_001",
   "scenario": {
@@ -1076,6 +1076,219 @@ recoverybench validate-report reports/payment_timeout_after_commit_report.json
     "safe": true,
     "safety_status": "VERIFIED_SAFE"
   },
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
 ```
+
+---
+
+## 10. Tool Extension API & Native Asynchronous Agents (Phase 4.2)
+
+Phase 4.2 decouples RecoveryBench from payment-specific assumptions, introducing public tool extension contracts, a declarative mock-tool registration API, native asynchronous agent execution, and a domain-independent LangGraph adapter.
+
+### 10.1 Public Tool Extension Contracts
+
+All tool contracts are exported directly from the top-level `recoverybench` package:
+
+```python
+from recoverybench import (
+    ToolRegistry,
+    ToolService,
+    ToolInvocation,
+    ToolResult,
+    MockPaymentService,
+    DeclarativeToolService,
+    mock_tool,
+)
+```
+
+#### ToolRegistry Container Protocol
+`ToolRegistry` provides intuitive dictionary-like container ergonomics:
+
+```python
+registry = ToolRegistry()
+registry.register(MockPaymentService())
+
+# Check membership (whitespace-tolerant)
+if "payment_gateway" in registry:
+    service = registry.get("payment_gateway")
+
+# Count registered tools
+print(len(registry))  # 1
+
+# Iterate through registered ToolService instances
+for tool in registry:
+    print(tool.name)
+```
+
+`registry.register(service)` enforces strict input validation: it rejects non-`ToolService` instances with `TypeError` and rejects services with empty or missing `name` attributes with `ValueError`.
+
+### 10.2 Declarative Mock Tool API (`@mock_tool`)
+
+The `@mock_tool` decorator allows developers to mock arbitrary external services (inventory, database, email, CRM, fulfillment) without authoring verbose low-level boilerplate.
+
+#### Automatic Effect Lifecycle & Idempotency
+When an action is marked with `mutates=True` (the default), `DeclarativeToolService` automatically:
+1. Validates incoming arguments against the function's `inspect.signature`, raising clear `TypeError` on missing required parameters or unexpected arguments.
+2. Generates an evidence reference token (`{name}_{action}_{counter:04d}`).
+3. Computes a unique mutation identifier (`eff_{evidence_reference}`).
+4. Caches idempotency keys: subsequent calls with the same key replay the previous result and effect ID with `idempotent_replay: True`.
+
+```python
+import recoverybench as rb
+
+
+@rb.mock_tool(name="inventory_service", action="reserve", mutates=True)
+def reserve_inventory(sku: str, quantity: int = 1) -> dict:
+    return {"reserved": True, "sku": sku, "quantity": quantity}
+
+
+# Testing with custom tools:
+result = rb.test_agent(
+    "payment_timeout_before_commit",
+    my_agent,
+    custom_tools=reserve_inventory,  # accepts single service, list of services, or ToolRegistry
+)
+```
+
+#### Multi-Action Tool Services
+Declare multi-action services using `@service.action`:
+
+```python
+inventory = rb.DeclarativeToolService(name="inventory_service")
+
+
+@inventory.action("reserve", mutates=True)
+def reserve(sku: str, quantity: int) -> dict:
+    return {"reserved": True, "sku": sku, "quantity": quantity}
+
+
+@inventory.action("check_stock", mutates=False)
+def check_stock(sku: str) -> dict:
+    return {"available": 100}
+```
+
+Read-only actions (`mutates=False`) execute normally but do not record committed mutations in the effect ledger.
+
+### 10.3 Native Asynchronous Agent Execution (`test_agent_async`)
+
+RecoveryBench natively evaluates asynchronous agents (`async def`) without thread blocking or unawaited coroutine warnings.
+
+```python
+import asyncio
+import recoverybench as rb
+
+
+@rb.agent(id="async_order_agent")
+async def async_agent(task: rb.TaskContext, tool_call: rb.ToolClient) -> rb.AgentResult:
+    await asyncio.sleep(0.01)
+    for attempt in range(1, 4):
+        try:
+            # tool_call can be awaited asynchronously or called synchronously
+            res = await tool_call(
+                "payment_gateway",
+                "charge",
+                task.task_params,
+                idempotency_key="async_key_1",
+            )
+            return rb.AgentResult(success=True, data=res, attempts=attempt)
+        except Exception:
+            continue
+    return rb.AgentResult(success=False)
+
+
+# Run test asynchronously:
+async def main():
+    result = await rb.test_agent_async("payment_timeout_before_commit", async_agent)
+    assert result.passed
+
+    # Or with RecoveryBenchTester async context manager:
+    async with rb.RecoveryBenchTester() as tester:
+        res = await tester.test_async("payment_timeout_before_commit", async_agent)
+        assert res.passed
+```
+
+#### Sync vs. Async Fail-Closed Safety Contracts
+1. **Synchronous `test_agent()` Rejection:** Passing an `async def` function to synchronous `test_agent()` or `RecoveryBenchTester.test()` immediately raises `ConfigurationError`, explicitly directing developers to use `await test_agent_async(...)`.
+2. **Container Isolation Fail-Closed:** Requesting Docker isolated execution (`isolation="isolated"`) with `test_agent_async()` immediately fails closed with `ConfigurationError`, explaining that container execution currently only supports synchronous agents and guiding developers to use `--isolation trusted`.
+
+### 10.4 Domain-Independent LangGraph Adapter
+
+`LangGraphAdapter` is completely decoupled from payment terminology. It supports arbitrary `StateGraph` workflows with custom tool bridging:
+
+```python
+import recoverybench as rb
+from recoverybench.adapters.langgraph import LangGraphAdapter, create_langchain_tool
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode, tools_condition
+
+
+def build_order_graph(tools):
+    def agent_node(state):
+        messages = state.get("messages", [])
+        last_msg = messages[-1] if messages else None
+        if last_msg and isinstance(last_msg, ToolMessage) and getattr(last_msg, "status", "") != "error":
+            return {"status": "COMPLETED", "success": True}
+        call = {
+            "name": "inventory_service_reserve",
+            "args": {"sku": state.get("item_id"), "qty": 1, "idempotency_key": "resv_key_1"},
+            "id": "call_1",
+            "type": "tool_call",
+        }
+        return {"messages": [AIMessage(content="", tool_calls=[call])]}
+
+    builder = StateGraph(dict)
+    builder.add_node("agent", agent_node)
+    builder.add_node("tools", ToolNode(tools, handle_tool_errors=True))
+    builder.add_edge(START, "agent")
+    builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
+    builder.add_edge("tools", "agent")
+    return builder.compile()
+
+
+adapter = LangGraphAdapter(
+    graph_factory=build_order_graph,
+    agent_id="inventory_graph_agent",
+    tools_factory=lambda tc: [create_langchain_tool("inventory_service", "reserve", tc)],
+    input_factory=lambda task: {
+        "messages": [HumanMessage(content="Reserve stock")],
+        "item_id": "sku_gadget_99",
+    },
+)
+
+result = rb.test_agent("payment_timeout_before_commit", adapter, custom_tools=reserve_inventory)
+assert result.passed
+```
+
+Existing payment agents (`IdempotentLangGraphAgent` and `NaiveLangGraphAgent`) remain 100% backward-compatible.
+
+---
+
+## 11. Ecosystem Framework Adapters (Phases 4.3 – 4.5)
+
+RecoveryBench provides official adapters and integrations for all major agent orchestration frameworks:
+
+### 11.1 CrewAI Adapter
+Integrates multi-agent Crew workflows with RecoveryBench fault injection and two-layer accounting:
+- Convert mock services to CrewAI BaseTool instances via `create_crewai_tool()` and `create_crewai_payment_tool()`.
+- Standardize agent task output parsing via `parse_crew_output()`.
+- See the dedicated [CrewAI Integration Guide](CREWAI_INTEGRATION_GUIDE.md).
+
+### 11.2 AutoGen Adapter
+Integrates Microsoft AutoGen ConversableAgent and AssistantAgent workflows:
+- Register fault-injecting tools as standard Python functions on agents via `create_autogen_tool()`.
+- Normalize multi-turn chat termination and tool outputs via `parse_chat_result()`.
+- See the dedicated [AutoGen Integration Guide](AUTOGEN_INTEGRATION_GUIDE.md).
+
+### 11.3 Model Context Protocol (MCP) Server Bridge
+Exposes RecoveryBench tools and evaluation endpoints to any MCP-compliant AI client over stdio JSON-RPC:
+- Seamless discovery (`tools/list`), execution (`tools/call`), and scenario audit inspection (`resources/read`).
+- Direct CLI invocation: `recoverybench mcp-server --scenario <id>`.
+- See the dedicated [MCP Integration Guide](MCP_INTEGRATION_GUIDE.md).
+
+### 11.4 Multi-Tool Sagas and Compensation
+Orchestrates multi-step sequential and DAG workflows with reverse saga compensation:
+- Define workflows via `WorkflowStep` schemas with `depends_on`, `is_compensatable`, and `compensation_action`.
+- Manage forward execution, failure propagation, LIFO compensation, and conservative uncertainty accounting.
+- See the dedicated [Multi-Tool Saga Guide](MULTI_TOOL_SAGA_GUIDE.md).

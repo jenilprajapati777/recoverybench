@@ -97,3 +97,67 @@ class MalformedResponseError(ToolError):
 
     def __init__(self, message: str = "Malformed response payload received from tool") -> None:
         super().__init__(message)
+
+class EvaluationInputValidationError(RecoveryBenchError, ValueError):
+    """Raised when evaluation input parameters fail strict type or enum membership validation."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, exit_code=2)
+
+
+class CapacityBreachIntegrityError(InfrastructureError):
+    """Raised when observed side effects exceed declared or enforced tool capacity."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class IdempotencyCorrelationError(RecoveryBenchError):
+    """Raised when idempotency metadata is contradictory, invalid, or fails correlation constraints."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, exit_code=2)
+
+
+class ConflictingEventIdentityError(InfrastructureError):
+    """Raised when an incoming event has an existing event_id or sequence identity but conflicting payload."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class ConcurrencyViolationError(RecoveryBenchError):
+    """Raised when concurrent operations violate safety invariants (e.g. registry reset during active worker)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, exit_code=3)
+
+
+class IncompatibleSchemaVersionError(RecoveryBenchError):
+    """Raised when a report cannot be losslessly projected into the requested schema version."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, exit_code=2)
+
+
+class ProcessTaintedError(InfrastructureError):
+    """Raised when attempting execution in a process tainted by a previous uncontained worker leak."""
+
+    def __init__(self, message: str = "Process is tainted by previous worker leak. Restart required.") -> None:
+        super().__init__(message)
+
+
+class ProcessTerminatedError(InfrastructureError):
+    """Raised when an isolated tool worker child process exceeds deadline and is forcibly terminated."""
+
+    def __init__(self, message: str, child_pid: int | None = None) -> None:
+        super().__init__(message)
+        self.child_pid = child_pid
+
+
+class ProcessContainmentError(InfrastructureError):
+    """Raised when an uncooperative child process cannot be confirmed terminated by the OS."""
+
+    def __init__(self, message: str, child_pid: int | None = None) -> None:
+        super().__init__(message)
+        self.child_pid = child_pid

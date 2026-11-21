@@ -5,8 +5,23 @@ from recoverybench.tools.base import (
     ToolRegistry,
     ToolResult,
     ToolService,
+    demonstrate_runtime_capacity_enforcement,
+)
+from recoverybench.tools.declarative import (
+    DeclarativeToolService,
+    mock_tool,
 )
 from recoverybench.tools.payment import MockPaymentService
+from recoverybench.tools.process_runner import (
+    ProcessExecutionResult,
+    ToolProcessRunner,
+)
+from recoverybench.tools.testing import (
+    UncooperativeErrorTool,
+    UncooperativeHangingTool,
+    UncooperativePidTool,
+    UncooperativeSuccessTool,
+)
 
 __all__ = [
     "ToolInvocation",
@@ -14,4 +29,13 @@ __all__ = [
     "ToolService",
     "ToolRegistry",
     "MockPaymentService",
+    "DeclarativeToolService",
+    "mock_tool",
+    "demonstrate_runtime_capacity_enforcement",
+    "ToolProcessRunner",
+    "ProcessExecutionResult",
+    "UncooperativePidTool",
+    "UncooperativeHangingTool",
+    "UncooperativeErrorTool",
+    "UncooperativeSuccessTool",
 ]

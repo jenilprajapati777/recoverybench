@@ -62,7 +62,14 @@ class CallableAgentAdapter(AgentAdapter):
             return 2
 
     def run(self, task: TaskContext, tool_call: ToolCaller) -> AgentResult:
-        """Execute the wrapped callable and normalize the result."""
+        """Execute the wrapped callable synchronously and normalize the result."""
+        if inspect.iscoroutinefunction(self.target_callable):
+            raise ConfigurationError(
+                f"Callable '{self.agent_id}' is an asynchronous function ('async def'). "
+                f"Asynchronous agents must be tested using 'await test_agent_async(...)' "
+                f"or 'run_async()' rather than synchronous 'test_agent()'."
+            )
+
         try:
             if self._param_count == 1:
                 raw_result = self.target_callable(tool_call)
@@ -81,9 +88,72 @@ class CallableAgentAdapter(AgentAdapter):
                 # Fallback: pass both task and tool_call
                 raw_result = self.target_callable(task, tool_call)
 
+            if inspect.iscoroutine(raw_result):
+                raw_result.close()
+                raise ConfigurationError(
+                    f"Callable '{self.agent_id}' returned an unawaited coroutine. "
+                    "Use 'await test_agent_async(...)' to test asynchronous agents."
+                )
+
             return self._normalize_result(raw_result)
         except (InfrastructureError, ConfigurationError, CircuitBreakerError):
             # RecoveryBench infrastructure exceptions must propagate!
+            raise
+        except ToolError as exc:
+            return AgentResult(
+                success=False,
+                status=CompletionStatus.FAILED,
+                error=f"{type(exc).__name__}: {mask_string_secrets(str(exc))}",
+                status_message=f"Agent unhandled tool error: {type(exc).__name__}",
+            )
+        except Exception as exc:
+            return AgentResult(
+                success=False,
+                status=CompletionStatus.FAILED,
+                error=f"{type(exc).__name__}: {mask_string_secrets(str(exc))}",
+                status_message=f"Agent raised exception: {type(exc).__name__}",
+            )
+
+    async def run_async(self, task: TaskContext, tool_call: ToolCaller) -> AgentResult:
+        """Asynchronously execute the wrapped callable and normalize the result."""
+        try:
+            # Determine argument dispatch
+            dispatch_arg: Any
+            if self._param_count == 1:
+                # Single argument is tool_call
+                if inspect.iscoroutinefunction(self.target_callable):
+                    raw_result = await self.target_callable(tool_call)
+                else:
+                    raw_result = self.target_callable(tool_call)
+            elif self._param_count == 2:
+                # Two arguments: (task/params, tool_call)
+                try:
+                    sig = inspect.signature(self.target_callable)
+                    first_param = list(sig.parameters.values())[0]
+                    if first_param.annotation is dict or first_param.name in ("params", "task_params", "input_data"):
+                        dispatch_arg = task.task_params
+                    else:
+                        dispatch_arg = task
+                except Exception:
+                    dispatch_arg = task
+
+                if inspect.iscoroutinefunction(self.target_callable):
+                    raw_result = await self.target_callable(dispatch_arg, tool_call)
+                else:
+                    raw_result = self.target_callable(dispatch_arg, tool_call)
+            else:
+                # Fallback: pass (task, tool_call)
+                if inspect.iscoroutinefunction(self.target_callable):
+                    raw_result = await self.target_callable(task, tool_call)
+                else:
+                    raw_result = self.target_callable(task, tool_call)
+
+            # If the function was a standard function that returned a coroutine, await it
+            if inspect.iscoroutine(raw_result):
+                raw_result = await raw_result
+
+            return self._normalize_result(raw_result)
+        except (InfrastructureError, ConfigurationError, CircuitBreakerError):
             raise
         except ToolError as exc:
             return AgentResult(
