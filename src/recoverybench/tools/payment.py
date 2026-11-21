@@ -2,6 +2,13 @@
 
 from typing import Any
 
+from recoverybench.models import (
+    CapacityProvenanceTier,
+    IdempotencyContract,
+    IdempotencyGuarantee,
+    IdempotencyScope,
+    ReplayBehavior,
+)
 from recoverybench.tools.base import ToolResult, ToolService
 
 
@@ -9,11 +16,32 @@ class MockPaymentService(ToolService):
     """Simulated payment gateway with stateful idempotency tracking."""
 
     name: str = "payment_gateway"
+    max_side_effect_capacity: int | float = 1
+    capacity_provenance: CapacityProvenanceTier = CapacityProvenanceTier.TIER_C1
+    declared_provenance: CapacityProvenanceTier = CapacityProvenanceTier.TIER_C1
+    verified_provenance: CapacityProvenanceTier = CapacityProvenanceTier.TIER_C1
+    is_runtime_enforced: bool = False
+    idempotency_contract: IdempotencyContract = IdempotencyContract(
+        guarantee=IdempotencyGuarantee.STRICT_EXACTLY_ONCE,
+        scope=IdempotencyScope.OPERATION_AND_ACTION,
+        replay_behavior=ReplayBehavior.RETURN_CACHED_RESULT,
+        verified_service_deduplication=True,
+    )
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        enforce_capacity: bool = True,
+        max_side_effect_capacity: int | float = 1,
+    ) -> None:
+        self.enforce_capacity = enforce_capacity
+        self.max_side_effect_capacity = max_side_effect_capacity
         self.charges: list[dict[str, Any]] = []
         self.idempotency_map: dict[str, dict[str, Any]] = {}
         self._charge_counter: int = 1
+        self.harness_attestation = None
+        if enforce_capacity:
+            self.declared_provenance = CapacityProvenanceTier.TIER_C3
+            self.is_runtime_enforced = True
 
     def reset(self) -> None:
         """Clear all transactions and idempotency state."""
@@ -67,7 +95,22 @@ class MockPaymentService(ToolService):
                 effect_id=cached_charge["effect_id"],
             )
 
-        # 2. Fresh Charge Commit
+        # 2. Capacity Enforcement (if enabled)
+        if getattr(self, "enforce_capacity", False):
+            if attempt_id:
+                current_count = sum(1 for c in self.charges if c.get("attempt_id") == attempt_id)
+            elif operation_id and operation_id.startswith("__c3_probe_"):
+                current_count = sum(1 for c in self.charges if c.get("operation_id") == operation_id)
+            else:
+                current_count = 0
+            if current_count >= self.max_side_effect_capacity:
+                return ToolResult(
+                    success=False,
+                    data={"error": f"Capacity limit {self.max_side_effect_capacity} reached"},
+                    committed=False,
+                )
+
+        # 3. Fresh Charge Commit
         charge_id = f"ch_sim_{self._charge_counter:04d}"
         effect_id = f"eff_{charge_id}"
         self._charge_counter += 1

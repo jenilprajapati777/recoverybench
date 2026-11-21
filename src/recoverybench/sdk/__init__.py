@@ -8,19 +8,13 @@ Public API for authoring, wrapping, and evaluating AI agents:
 - LangGraphAdapter: First-class adapter for LangGraph StateGraph agents.
 """
 
+import importlib
+from typing import Any
+
 from recoverybench.adapters.callable import (
     CallableAgentAdapter,
     agent,
     wrap_agent,
-)
-from recoverybench.adapters.langgraph import (
-    IdempotentLangGraphAgent,
-    LangGraphAdapter,
-    NaiveLangGraphAgent,
-    bridge_tools,
-    build_idempotent_langgraph_agent,
-    build_naive_langgraph_agent,
-    create_langchain_payment_tool,
 )
 from recoverybench.agent.base import (
     AgentAdapter,
@@ -53,6 +47,26 @@ from recoverybench.sdk.tester import (
     resolve_scenario,
     test_agent,
 )
+
+_LAZY_SDK_EXPORTS: dict[str, str] = {
+    "LangGraphAdapter": "recoverybench.adapters.langgraph",
+    "NaiveLangGraphAgent": "recoverybench.adapters.langgraph",
+    "IdempotentLangGraphAgent": "recoverybench.adapters.langgraph",
+    "bridge_tools": "recoverybench.adapters.langgraph",
+    "build_naive_langgraph_agent": "recoverybench.adapters.langgraph",
+    "build_idempotent_langgraph_agent": "recoverybench.adapters.langgraph",
+    "create_langchain_payment_tool": "recoverybench.adapters.langgraph",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_SDK_EXPORTS:
+        mod = importlib.import_module(_LAZY_SDK_EXPORTS[name])
+        val = getattr(mod, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 __all__ = [
     "test_agent",

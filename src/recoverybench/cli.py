@@ -905,5 +905,41 @@ def report(
     raise typer.Exit(code=0)
 
 
+@app.command(name="mcp-server")
+def mcp_server(
+    scenario: str | None = typer.Option(
+        None,
+        "--scenario",
+        "-s",
+        help="Optional scenario ID or path to bind for fault injection and task context.",
+    ),
+    isolation: str = typer.Option(
+        "trusted",
+        "--isolation",
+        "-i",
+        help="Execution isolation mode: 'trusted' or 'isolated'.",
+    ),
+) -> None:
+    """Start the RecoveryBench Model Context Protocol (MCP) stdio server."""
+    from recoverybench.mcp.server import MCPServerConfig, RecoveryBenchMCPServer
+    from recoverybench.sandbox.backend import IsolationMode
+    from recoverybench.scenarios.registry import ScenarioRegistry
+    from recoverybench.scenarios.validator import ScenarioValidator
+
+    scenario_model = None
+    if scenario:
+        scenario_path = Path(scenario)
+        if scenario_path.exists():
+            scenario_model = ScenarioValidator.validate_file(scenario_path)
+        else:
+            registry = ScenarioRegistry()
+            scenario_model = registry.get(scenario)
+
+    iso_mode = IsolationMode.ISOLATED if isolation.lower() == "isolated" else IsolationMode.TRUSTED
+    config = MCPServerConfig(scenario=scenario_model, isolation=iso_mode)
+    server = RecoveryBenchMCPServer(config=config)
+    server.run_stdio_sync()
+
+
 if __name__ == "__main__":
     app()

@@ -10,6 +10,7 @@ from recoverybench.sandbox.backend import (
     ExecutionBackend,
     InProcessExecutionBackend,
     IsolationMode,
+    ProcessIsolatedExecutionBackend,
 )
 from recoverybench.sandbox.config import (
     BLOCKED_ENV_PREFIXES,
@@ -27,6 +28,7 @@ __all__ = [
     "DockerExecutionBackend",
     "ExecutionBackend",
     "InProcessExecutionBackend",
+    "ProcessIsolatedExecutionBackend",
     "IsolationMode",
     "MANDATORY_CONTAINER_ENV",
     "SandboxConfig",

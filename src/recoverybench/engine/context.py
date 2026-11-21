@@ -47,17 +47,17 @@ class RunResult(BaseModel):
             reasons = "; ".join(self.evaluation.failure_reasons)
             raise AssertionError(f"RecoveryBench test '{self.scenario.scenario_id}' failed: {reasons}")
 
-    def to_report_dict(self) -> dict[str, Any]:
+    def to_report_dict(self, schema_version: int = 1) -> dict[str, Any]:
         """Convert RunResult into the standardized, redacted report dictionary."""
         from recoverybench.reporting.json_reporter import JSONReporter
 
-        return JSONReporter.generate_report_dict(self)
+        return JSONReporter.generate_report_dict(self, schema_version=schema_version)
 
-    def to_report(self) -> "ReportModel":
+    def to_report(self, schema_version: int = 1) -> "ReportModel":
         """Convert RunResult into the validated ReportModel instance."""
         from recoverybench.reporting.json_reporter import JSONReporter
 
-        return JSONReporter.generate_report_model(self)
+        return JSONReporter.generate_report_model(self, schema_version=schema_version)
 
     def to_json(self, indent: int = 2) -> str:
         """Convert RunResult into a formatted, deterministic JSON string."""

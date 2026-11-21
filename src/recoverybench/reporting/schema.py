@@ -5,21 +5,63 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from recoverybench.errors import ConfigurationError, ReportValidationError
 from recoverybench.models import CommitStatus
 from recoverybench.scenarios.schema import SUPPORTED_SCENARIO_SCHEMA_VERSIONS
 from recoverybench.security import redact_sensitive_data
 
-CURRENT_REPORT_SCHEMA_VERSION: int = 1
-SUPPORTED_REPORT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+CURRENT_REPORT_SCHEMA_VERSION: int = 2
+SUPPORTED_REPORT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 
 SUPPORTED_VERDICTS: frozenset[str] = frozenset({
     "PASS",
     "GENUINE_FAILURE",
     "INFRASTRUCTURE_ERROR",
     "INSUFFICIENT_EVIDENCE",
+})
+
+VALID_BEHAVIORAL_VERDICTS: frozenset[str] = frozenset({
+    "PASS",
+    "GENUINE_FAILURE",
+    "INSUFFICIENT_EVIDENCE",
+})
+
+VALID_EXTERNAL_STATUSES: frozenset[str] = frozenset({
+    "EXACT_MATCH",
+    "DUPLICATE_COMMITTED",
+    "MISSING_COMMITS",
+    "CONFIRMED_ABSENT",
+    "UNRESOLVED_INTERVAL",
+    "UNBOUNDED_AMBIGUITY",
+    "AUDIT_OBSERVED_NON_FINAL",
+    "CONTRADICTORY_EVIDENCE",
+})
+
+VALID_PRIMARY_INFRASTRUCTURE_STATUSES: frozenset[str] = frozenset({
+    "CLEAN",
+    "WORKER_TIMED_OUT",
+    "THREAD_LEAKED",
+    "PROCESS_TERMINATED",
+    "INTEGRITY_VIOLATION",
+})
+
+VALID_RECONCILIATION_INFRASTRUCTURE_STATUSES: frozenset[str] = frozenset({
+    "CLEAN",
+    "RECONCILIATION_FAILED",
+})
+
+VALID_EXECUTION_FINALITIES: frozenset[str] = frozenset({
+    "FINAL",
+    "PROVISIONAL",
 })
 
 SUPPORTED_COMMIT_STATUSES: frozenset[str] = frozenset(s.value for s in CommitStatus)
@@ -126,6 +168,24 @@ class ExecutionOutcome(StrictReportBaseModel):
     runtime_failure: bool = Field(
         description="True if run failed due to unexpected runtime/infrastructure failure"
     )
+    behavioral_verdict: str | None = Field(
+        default=None, description="Dimension 1: Behavioral classification (PASS, GENUINE_FAILURE, INSUFFICIENT_EVIDENCE)"
+    )
+    side_effect_status: str | None = Field(
+        default=None, description="Dimension 2: External side-effect status"
+    )
+    primary_infrastructure_status: str | None = Field(
+        default=None, description="Dimension 3: Primary worker containment status"
+    )
+    reconciliation_infrastructure_status: str | None = Field(
+        default=None, description="Optional Dimension: Post-cutoff reconciliation status"
+    )
+    overall_outcome: str | None = Field(
+        default=None, description="Dimension 4: Authoritative synthesized overall outcome"
+    )
+    execution_finality: str | None = Field(
+        default=None, description="Execution finality: FINAL or PROVISIONAL"
+    )
 
     @field_validator("side_effect_safety", mode="before")
     @classmethod
@@ -149,6 +209,10 @@ class ExecutionOutcome(StrictReportBaseModel):
         return v
 
 
+def _default_bounds() -> list[int | str]:
+    return [0, 0]
+
+
 class SideEffectReport(StrictReportBaseModel):
     """Detailed verification results for tool side-effects and mutation safety."""
 
@@ -162,6 +226,11 @@ class SideEffectReport(StrictReportBaseModel):
     )
     safe: bool = Field(default=False, description="True ONLY if safety_status is VERIFIED_SAFE")
     committed_effect_ids: list[str] = Field(default_factory=list, description="Identifiers of committed effects")
+    uncertain_count: int = Field(default=0, description="Count of uncertain side-effects")
+    bounds: list[int | str] = Field(
+        default_factory=_default_bounds,
+        description="Two-layer accounting effect bounds [S_min, S_max]",
+    )
 
     @field_validator("safety_status", mode="before")
     @classmethod
@@ -275,6 +344,11 @@ class EventReport(StrictReportBaseModel):
     error_type: str | None = Field(default=None, description="Error name if raised")
     evidence_reference: str | None = Field(default=None, description="Transaction reference")
     details: dict[str, Any] = Field(default_factory=dict, description="Sanitized metadata")
+    uncertainty_reason: str | None = Field(default=None, description="Uncertainty reason classification")
+    reconciliation_status: str | None = Field(default=None, description="Status of late reconciliation")
+    capacity_provenance: str | None = Field(default=None, description="Capacity provenance tier C1..C4")
+    writer_id: str | None = Field(default=None, description="Writer identity: THREAD_HOOK, PROCESS_SUPERVISOR, RECON_ENGINE")
+    event_sequence: int | None = Field(default=None, description="Monotonic sequence number per writer")
 
     @field_validator("commit_status", mode="before")
     @classmethod
@@ -323,6 +397,23 @@ class MetadataReport(StrictReportBaseModel):
     total_events: int = Field(default=0, description="Total ledger events recorded")
     max_retries_observed: int = Field(default=0, description="Max observed retry attempts")
     seed: int | None = Field(default=None, description="PRNG seed override if applied")
+    unresolved_workers: int = Field(default=0, description="Count of unresolved in-flight workers at cutoff")
+
+
+class SupplementalReconciliationReport(StrictReportBaseModel):
+    """Artifact 3: Supplemental reconciliation report recording post-cutoff audit and late completions."""
+
+    reconciliation_id: str = Field(description="UUID of reconciliation operation")
+    parent_report_sha256: str = Field(description="SHA-256 of immutable primary report")
+    sequence_number: int = Field(ge=1, description="Strictly ordered sequence number")
+    reconciliation_status: str = Field(description="Reconciliation status: EXACT_MATCH, UNRESOLVED_INTERVAL, etc.")
+    reconciliation_infrastructure_status: str = Field(
+        description="Reconciliation infra status: CLEAN, RECONCILIATION_FAILED"
+    )
+    bounds: list[int | str] = Field(default_factory=_default_bounds, description="Reconciled bounds")
+    late_events: list[dict[str, Any]] = Field(default_factory=list, description="Late events processed")
+    reconciliation_timestamp: str = Field(default="", description="ISO-8601 timestamp")
+    details: dict[str, Any] = Field(default_factory=dict, description="Reconciliation metadata")
 
 
 class ReportModel(StrictReportBaseModel):
@@ -343,6 +434,12 @@ class ReportModel(StrictReportBaseModel):
     errors: list[str] = Field(default_factory=list, description="Validation, execution, and assertion errors")
     metadata: MetadataReport = Field(description="Execution run metadata")
     agent_result: dict[str, Any] | None = Field(default=None, description="Raw agent result dictionary")
+    supplemental_reconciliation: SupplementalReconciliationReport | dict[str, Any] | None = Field(
+        default=None, description="Artifact 3: Supplemental reconciliation report"
+    )
+    late_events: list[dict[str, Any]] = Field(
+        default_factory=list, description="Late-arriving outcome events"
+    )
 
     @field_validator("report_schema_version", mode="before")
     @classmethod
@@ -379,6 +476,25 @@ class ReportValidator:
 
         sanitized_data = redact_sensitive_data(data)
 
+        # 1. Strict report schema version check
+        schema_version = sanitized_data.get("report_schema_version")
+        if schema_version is None:
+            raise ReportValidationError(
+                f"Missing required field 'report_schema_version' in '{source_label}'. "
+                f"Supported versions: {sorted(SUPPORTED_REPORT_SCHEMA_VERSIONS)}."
+            )
+        if type(schema_version) is not int or isinstance(schema_version, bool):
+            raise ReportValidationError(
+                f"Invalid report_schema_version type in '{source_label}'. "
+                f"report_schema_version must be an integer, supported versions: "
+                f"{sorted(SUPPORTED_REPORT_SCHEMA_VERSIONS)}."
+            )
+        if schema_version not in SUPPORTED_REPORT_SCHEMA_VERSIONS:
+            raise ReportValidationError(
+                f"Unsupported report_schema_version: {schema_version} in '{source_label}'. "
+                f"Supported versions: {sorted(SUPPORTED_REPORT_SCHEMA_VERSIONS)}."
+            )
+
         try:
             model = ReportModel.model_validate(sanitized_data)
         except ValidationError as val_err:
@@ -388,8 +504,164 @@ class ReportValidator:
                 errors=formatted_errors,
             ) from val_err
 
-        cls._validate_semantics(model, source_label=source_label)
+        if schema_version == 1:
+            cls._validate_v1(sanitized_data, model, source_label=source_label)
+        elif schema_version == 2:
+            cls._validate_v2(sanitized_data, model, source_label=source_label)
+
         return model
+
+    @classmethod
+    def _validate_v1(cls, data: dict[str, Any], model: ReportModel, source_label: str) -> None:
+        """Validate Schema v1 report constraints and semantics."""
+        errors: list[str] = []
+
+        # Check raw input dictionary for forbidden v2 exclusive fields in v1
+        outcome_raw = data.get("outcome", {})
+        if isinstance(outcome_raw, dict):
+            v2_outcome_fields = [
+                "behavioral_verdict", "overall_outcome", "side_effect_status",
+                "primary_infrastructure_status", "reconciliation_infrastructure_status",
+                "execution_finality",
+            ]
+            for f in v2_outcome_fields:
+                if f in outcome_raw and outcome_raw[f] is not None:
+                    errors.append(f"Schema v1 report cannot contain Schema v2 outcome field '{f}'.")
+
+        side_raw = data.get("side_effects", {})
+        if isinstance(side_raw, dict):
+            if "uncertain_count" in side_raw and side_raw["uncertain_count"] != 0:
+                errors.append("Schema v1 report cannot contain non-zero 'uncertain_count'.")
+            if "bounds" in side_raw and side_raw["bounds"] != [0, 0] and side_raw["bounds"] != [model.side_effects.actual_count, model.side_effects.actual_count]:
+                b = side_raw["bounds"]
+                if len(b) == 2 and b[0] != b[1]:
+                    errors.append(f"Schema v1 report cannot contain non-scalar bounds: {b}.")
+
+        meta_raw = data.get("metadata", {})
+        if isinstance(meta_raw, dict):
+            if "unresolved_workers" in meta_raw and meta_raw["unresolved_workers"] != 0:
+                errors.append("Schema v1 report cannot contain non-zero 'unresolved_workers'.")
+
+        if data.get("supplemental_reconciliation") is not None:
+            errors.append("Schema v1 report cannot contain 'supplemental_reconciliation'.")
+
+        if len(data.get("late_events", [])) > 0:
+            errors.append("Schema v1 report cannot contain 'late_events'.")
+
+        for idx, ev in enumerate(data.get("events", [])):
+            if isinstance(ev, dict):
+                for ef in ("uncertainty_reason", "reconciliation_status", "writer_id", "event_sequence"):
+                    if ev.get(ef) is not None:
+                        errors.append(f"Event #{idx+1} in Schema v1 report contains forbidden v2 field '{ef}'.")
+                cap_prov = ev.get("capacity_provenance")
+                if cap_prov is not None and cap_prov != "TIER_C1":
+                    errors.append(f"Event #{idx+1} in Schema v1 report contains active capacity_provenance '{cap_prov}'.")
+
+        if errors:
+            raise ReportValidationError(
+                f"Schema v1 validation failed for '{source_label}'",
+                errors=errors,
+            )
+
+        # Run full v1 semantic consistency checks
+        cls._validate_semantics(model, source_label=source_label)
+
+    @classmethod
+    def _validate_v2(cls, data: dict[str, Any], model: ReportModel, source_label: str) -> None:
+        """Validate Schema v2 report constraints and semantics."""
+        errors: list[str] = []
+
+        outcome = model.outcome
+        # 1. Required v2 outcome fields
+        if outcome.behavioral_verdict is None or outcome.behavioral_verdict not in VALID_BEHAVIORAL_VERDICTS:
+            errors.append(
+                f"outcome.behavioral_verdict is required in Schema v2 and must be one of {sorted(VALID_BEHAVIORAL_VERDICTS)}."
+            )
+        if outcome.side_effect_status is None or outcome.side_effect_status not in VALID_EXTERNAL_STATUSES:
+            errors.append(
+                f"outcome.side_effect_status is required in Schema v2 and must be one of {sorted(VALID_EXTERNAL_STATUSES)}."
+            )
+        if outcome.primary_infrastructure_status is None or outcome.primary_infrastructure_status not in VALID_PRIMARY_INFRASTRUCTURE_STATUSES:
+            errors.append(
+                f"outcome.primary_infrastructure_status is required in Schema v2 and must be one of {sorted(VALID_PRIMARY_INFRASTRUCTURE_STATUSES)}."
+            )
+        if outcome.reconciliation_infrastructure_status is not None and outcome.reconciliation_infrastructure_status not in VALID_RECONCILIATION_INFRASTRUCTURE_STATUSES:
+            errors.append(
+                f"outcome.reconciliation_infrastructure_status must be one of {sorted(VALID_RECONCILIATION_INFRASTRUCTURE_STATUSES)}."
+            )
+        if outcome.overall_outcome is None or outcome.overall_outcome not in SUPPORTED_VERDICTS:
+            errors.append(
+                f"outcome.overall_outcome is required in Schema v2 and must be one of {sorted(SUPPORTED_VERDICTS)}."
+            )
+        if outcome.execution_finality is None or outcome.execution_finality not in VALID_EXECUTION_FINALITIES:
+            errors.append(
+                f"outcome.execution_finality is required in Schema v2 and must be one of {sorted(VALID_EXECUTION_FINALITIES)}."
+            )
+
+        if outcome.overall_outcome is not None and outcome.verdict != outcome.overall_outcome:
+            errors.append(
+                f"outcome.verdict ('{outcome.verdict}') must match outcome.overall_outcome ('{outcome.overall_outcome}')."
+            )
+
+        # 2. Side effects bounds check
+        if len(model.side_effects.bounds) != 2:
+            errors.append(
+                f"side_effects.bounds must be a 2-element list [S_min, S_max], got {model.side_effects.bounds}."
+            )
+
+        # 3. Primary infrastructure containment preservation (Invariant 6)
+        if outcome.primary_infrastructure_status in ("THREAD_LEAKED", "PROCESS_TERMINATED", "INTEGRITY_VIOLATION"):
+            if outcome.overall_outcome != "INFRASTRUCTURE_ERROR":
+                errors.append(
+                    f"Overall outcome must be INFRASTRUCTURE_ERROR when primary_infrastructure_status is '{outcome.primary_infrastructure_status}'."
+                )
+
+        if outcome.reconciliation_infrastructure_status == "RECONCILIATION_FAILED":
+            if outcome.overall_outcome != "INFRASTRUCTURE_ERROR":
+                errors.append(
+                    "Overall outcome must be INFRASTRUCTURE_ERROR when reconciliation_infrastructure_status is 'RECONCILIATION_FAILED'."
+                )
+
+        # 4. Supplemental reconciliation verification
+        if model.supplemental_reconciliation is not None:
+            sr = model.supplemental_reconciliation
+            if isinstance(sr, dict):
+                if not sr.get("reconciliation_id") or not str(sr.get("reconciliation_id")).strip():
+                    errors.append("supplemental_reconciliation.reconciliation_id cannot be empty.")
+                parent_hash = sr.get("parent_report_sha256", "")
+                if not parent_hash or len(str(parent_hash)) != 64:
+                    errors.append("supplemental_reconciliation.parent_report_sha256 must be a 64-character SHA-256 hash.")
+            elif isinstance(sr, SupplementalReconciliationReport):
+                if not sr.reconciliation_id.strip():
+                    errors.append("supplemental_reconciliation.reconciliation_id cannot be empty.")
+                if len(sr.parent_report_sha256) != 64:
+                    errors.append("supplemental_reconciliation.parent_report_sha256 must be a 64-character SHA-256 hash.")
+
+        if errors:
+            raise ReportValidationError(
+                f"Schema v2 validation failed for '{source_label}'",
+                errors=errors,
+            )
+
+        # Basic structural and identifier checks
+        if not model.run_id or not model.run_id.strip():
+            errors.append("Field 'run_id' cannot be empty or whitespace.")
+        if not model.scenario.id or not model.scenario.id.strip():
+            errors.append("Field 'scenario.id' cannot be empty or whitespace.")
+        if model.metadata.total_events != len(model.events):
+            errors.append(
+                f"metadata.total_events ({model.metadata.total_events}) conflicts with event count ({len(model.events)})."
+            )
+        if model.fault_injection.injected_fault_count != len(model.fault_injection.injected_faults):
+            errors.append(
+                f"fault_injection.injected_fault_count ({model.fault_injection.injected_fault_count}) conflicts with injected_faults ({len(model.fault_injection.injected_faults)})."
+            )
+
+        if errors:
+            raise ReportValidationError(
+                f"Schema v2 semantic validation failed for '{source_label}'",
+                errors=errors,
+            )
 
     @classmethod
     def validate_json(cls, json_str: str, source_label: str = "inline") -> ReportModel:

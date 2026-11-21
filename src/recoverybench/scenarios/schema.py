@@ -1,5 +1,6 @@
 """Pydantic schema definitions for RecoveryBench scenarios."""
 
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -37,6 +38,46 @@ def validate_scenario_schema_version(version: Any) -> int:
     return version
 
 
+class StepExecutionStatus(StrEnum):
+    """Lifecycle execution status of a single workflow step."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    COMPENSATED = "COMPENSATED"
+    COMPENSATION_FAILED = "COMPENSATION_FAILED"
+    COMPENSATION_UNCERTAIN = "COMPENSATION_UNCERTAIN"
+
+
+class WorkflowStatus(StrEnum):
+    """Overall execution and recovery status of a multi-tool workflow."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED_COMPENSATED = "FAILED_COMPENSATED"
+    FAILED_COMPENSATION_FAILED = "FAILED_COMPENSATION_FAILED"
+    FAILED_UNCOMPENSATED = "FAILED_UNCOMPENSATED"
+    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
+
+
+class WorkflowStep(BaseModel):
+    """Specification of an individual step in a multi-tool workflow."""
+
+    step_id: str = Field(description="Unique step identifier within the workflow")
+    tool_name: str = Field(description="Target tool service to invoke")
+    action: str = Field(description="Target action to execute on tool service")
+    params: dict[str, Any] = Field(default_factory=dict, description="Static or template parameters for invocation")
+    depends_on: list[str] = Field(default_factory=list, description="List of step_ids that must succeed before this step executes")
+    is_compensatable: bool = Field(default=True, description="Whether this step can and should be compensated on downstream failure")
+    compensation_tool: str | None = Field(default=None, description="Tool service to invoke for compensation (defaults to tool_name)")
+    compensation_action: str | None = Field(default=None, description="Action to invoke for compensation (e.g. 'refund', 'cancel')")
+    compensation_params: dict[str, Any] = Field(default_factory=dict, description="Parameters for compensation action")
+    optional: bool = Field(default=False, description="Whether workflow continues despite failure of this step")
+
+
 class ScenarioAssertions(BaseModel):
     """Assertion rules for evaluating recovery outcome."""
 
@@ -51,6 +92,15 @@ class ScenarioAssertions(BaseModel):
     expect_agent_success: bool = Field(default=True, description="Whether agent should ultimately succeed")
     verify_unknown_outcome_handling: bool = Field(
         default=False, description="Assert agent handled unknown transaction outcome safely"
+    )
+    expect_compensation: bool | None = Field(
+        default=None, description="Assert whether saga compensation was executed on failure"
+    )
+    max_uncompensated_effects: int | None = Field(
+        default=None, description="Maximum permitted uncompensated forward effects (e.g. 0 on successful compensation)"
+    )
+    require_all_steps_succeeded: bool | None = Field(
+        default=None, description="Assert all workflow steps completed without error"
     )
 
     @property
@@ -78,10 +128,13 @@ class ScenarioModel(BaseModel):
     scenario_id: str = Field(description="Unique snake_case identifier for scenario")
     name: str = Field(description="Human-readable title")
     description: str = Field(description="Detailed narrative of what this scenario tests")
-    target_tool: str = Field(description="Mock tool to intercept")
+    target_tool: str = Field(default="multi_tool", description="Mock tool to intercept")
     target_action: str | None = Field(default=None, description="Specific tool action to target")
     faults: list[FaultConfig] = Field(default_factory=list, description="Fault rules to inject")
     task: dict[str, Any] = Field(default_factory=dict, description="Input parameters passed to agent task")
+    steps: list[WorkflowStep] = Field(
+        default_factory=list, description="Ordered steps for multi-tool workflow execution and saga compensation"
+    )
     assertions: ScenarioAssertions = Field(default_factory=ScenarioAssertions, description="Verification rules")
     seed: int = Field(default=42, description="Deterministic seed for execution and pseudo-random decisions")
     single_operation: bool | None = Field(
@@ -97,6 +150,8 @@ class ScenarioModel(BaseModel):
     @property
     def is_single_operation(self) -> bool:
         """Determine whether the scenario is scoped to a single logical operation."""
+        if self.steps:
+            return False
         if self.single_operation is not None:
             return self.single_operation
         if self.task.get("single_operation") is False:

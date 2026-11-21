@@ -30,8 +30,11 @@ If you are using RecoveryBench to evaluate your own agents:
 # Core package (Typer CLI, SQLite ledger, generic callables, virtual time)
 python -m pip install recoverybench
 
-# With native LangGraph framework support:
+# With native framework adapters:
 python -m pip install "recoverybench[langgraph]"
+python -m pip install "recoverybench[crewai]"
+python -m pip install "recoverybench[autogen]"
+python -m pip install "recoverybench[all]"
 ```
 
 ### Option B: Contributor & Development Installation (From Source)
@@ -55,8 +58,8 @@ python -m venv .venv
 # 3. Upgrade packaging tools
 python -m pip install --upgrade pip setuptools wheel
 
-# 4. Install in editable mode with development dependencies
-pip install -e ".[dev]"
+# 4. Install in editable mode with all development dependencies
+pip install -e ".[langgraph,dev]"
 ```
 
 *Tip (Execution Policy):* If PowerShell restricts script activation, run:
@@ -76,11 +79,9 @@ source .venv/bin/activate
 # 3. Upgrade packaging tools
 python -m pip install --upgrade pip setuptools wheel
 
-# 4. Install in editable mode with development dependencies
-pip install -e ".[dev]"
+# 4. Install in editable mode with all development dependencies
+pip install -e ".[langgraph,dev]"
 ```
-
-*(Optional: If testing LangGraph agents, install with: `pip install -e ".[langgraph,dev]"`).*
 
 ---
 
@@ -94,7 +95,7 @@ recoverybench --version
 ```
 Output:
 ```text
-RecoveryBench 0.1.0
+RecoveryBench 0.2.0
 ```
 
 ### 3.2 Run Environment Diagnostics (`recoverybench doctor`)
@@ -296,18 +297,109 @@ result = test_agent(
 assert result.passed, f"Agent failed recovery invariants: {result.failure_reasons}"
 ```
 
-### Option B: LangGraph Framework Adapter
+### Option B: Native Asynchronous Agent (`test_agent_async`)
 
-If using LangGraph `StateGraph`, import `LangGraphAdapter` and wrap your compiled graph:
+RecoveryBench natively supports `async def` agent coroutines and asynchronous tool calls:
 
 ```python
-from recoverybench.adapters.langgraph import LangGraphAdapter, create_langchain_payment_tool
+import asyncio
+import recoverybench as rb
 
-# Bridged LangChain tool compatible with LangGraph ToolNode
-payment_tool = create_langchain_payment_tool(tool_client)
+
+@rb.agent(id="my_async_agent")
+async def my_async_agent(task: rb.TaskContext, tool_call: rb.ToolCaller) -> rb.AgentResult:
+    stable_key = f"idemp_{task.task_params.get('customer_id')}"
+    for attempt in range(1, 4):
+        try:
+            res = await tool_call(
+                "payment_gateway",
+                "charge",
+                task.task_params,
+                idempotency_key=stable_key,
+            )
+            return rb.AgentResult(success=True, data=res, attempts=attempt)
+        except Exception:
+            await asyncio.sleep(0.01)
+            continue
+    return rb.AgentResult(success=False, error="Max retries reached")
+
+
+# Run in an async test:
+async def test_my_async_agent():
+    result = await rb.test_agent_async("payment_timeout_after_commit", my_async_agent)
+    assert result.passed
 ```
 
-See [SDK_INTEGRATION_GUIDE.md](SDK_INTEGRATION_GUIDE.md) for full LangGraph examples.
+### Option C: Custom Mock Tools with `@mock_tool`
+
+Extend RecoveryBench beyond payments by declaring custom domain mock services with automatic effect lifecycle and idempotency bookkeeping:
+
+```python
+import recoverybench as rb
+
+
+@rb.mock_tool(name="inventory_service", action="reserve", mutates=True)
+def reserve_stock(sku: str, quantity: int = 1) -> dict:
+    return {"reserved": True, "sku": sku, "quantity": quantity}
+
+
+# Test your agent with your custom tool service:
+result = rb.test_agent(
+    scenario="payment_timeout_before_commit",
+    agent=my_agent,
+    custom_tools=reserve_stock,
+)
+```
+
+### Option D: LangGraph Framework Adapter
+
+For LangGraph `StateGraph` workflows, use `LangGraphAdapter` with either payment tools or generic custom tools via `create_langchain_tool`:
+
+```python
+import recoverybench as rb
+from recoverybench.adapters.langgraph import LangGraphAdapter, create_langchain_tool
+
+adapter = LangGraphAdapter(
+    graph_factory=my_graph_builder,
+    agent_id="order_agent",
+    tools_factory=lambda tc: [create_langchain_tool("inventory_service", "reserve", tc)],
+)
+
+result = rb.test_agent("payment_timeout_before_commit", adapter, custom_tools=reserve_stock)
+assert result.passed
+```
+
+See [SDK_INTEGRATION_GUIDE.md](SDK_INTEGRATION_GUIDE.md) for full LangGraph examples and multi-operation workflows.
+
+### Option E: CrewAI & AutoGen Adapters
+
+Test CrewAI agents and AutoGen ConversableAgent/AssistantAgent teams against fault scenarios:
+
+```python
+import recoverybench as rb
+from recoverybench.adapters.crewai import CrewAIAdapter, create_crewai_payment_tool
+from recoverybench.adapters.autogen import AutoGenAdapter, create_autogen_payment_tool
+
+# CrewAI
+crew_adapter = CrewAIAdapter(crew_factory=my_crew_builder, agent_id="crewai_order_agent")
+crew_res = rb.test_agent("payment_timeout_after_commit", crew_adapter)
+
+# AutoGen
+autogen_adapter = AutoGenAdapter(agent_factory=my_autogen_builder, agent_id="autogen_assistant")
+autogen_res = rb.test_agent("payment_timeout_after_commit", autogen_adapter)
+```
+
+See [CREWAI_INTEGRATION_GUIDE.md](CREWAI_INTEGRATION_GUIDE.md) and [AUTOGEN_INTEGRATION_GUIDE.md](AUTOGEN_INTEGRATION_GUIDE.md) for complete details.
+
+### Option F: Model Context Protocol (MCP) Server
+
+Connect any MCP-compatible client (Claude Desktop, Cursor, custom agents) via standard JSON-RPC:
+
+```bash
+recoverybench mcp-server --scenario payment_timeout_after_commit --isolation isolated
+```
+
+See [MCP_INTEGRATION_GUIDE.md](MCP_INTEGRATION_GUIDE.md) for protocol details and tool schemas.
 
 ---
 

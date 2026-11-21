@@ -1,6 +1,6 @@
 # RecoveryBench - Technical Architecture
 
-**Version:** 0.1.0  
+**Version:** 0.2.0
 **Status:** Approved Architecture
 
 ---
@@ -49,6 +49,7 @@ Built with **Typer** and styled with **Rich**. Provides user entrypoints:
 - `report <run-id>`: Generates HTML and JSON reports.
 - `validate <scenario>`: Validates scenario YAML schema without executing.
 - `doctor`: Diagnoses local environment (Python version, write permissions, SQLite availability).
+- `mcp-server`: Runs the Model Context Protocol (MCP) server over stdio JSON-RPC.
 
 Standard Exit Codes:
 - `0`: All assertions passed.
@@ -107,6 +108,25 @@ class AgentAdapter(ABC):
    - Supports graph factories (`def create_graph(tools) -> CompiledStateGraph`).
    - Evaluates state persistence and idempotency key preservation across retry cycles.
    - Includes reference agents: `NaiveLangGraphAgent` and `IdempotentLangGraphAgent`.
+
+3. **CrewAI Framework Adapter (`CrewAIAdapter`)**:
+   - Bridges mock services into native CrewAI `BaseTool` instances (`create_crewai_tool`, `create_crewai_payment_tool`).
+   - Intercepts and maps CrewAI task output and exceptions via `parse_crew_output()`.
+   - Supports both synchronous and asynchronous Crew execution.
+
+4. **AutoGen Framework Adapter (`AutoGenAdapter`)**:
+   - Registers fault-injecting mock tool functions directly with Microsoft AutoGen agents (`create_autogen_tool`, `create_autogen_payment_tool`).
+   - Normalizes multi-turn chat termination and tool call outputs via `parse_chat_result()`.
+   - Supports both synchronous and asynchronous AutoGen execution.
+
+5. **Model Context Protocol Server (`RecoveryBenchMCPServer`)**:
+   - Exposes RecoveryBench tools (`tools/list`, `tools/call`), scenario audit traces (`resources/list`, `resources/read`), and evaluation (`recoverybench_evaluate`) over standard JSON-RPC 2.0 stdio.
+   - Enables MCP clients (Claude Desktop, Cursor, IDEs) to run recovery evaluations directly.
+
+6. **Multi-Tool Saga Orchestrator (`SagaOrchestrator`, `SagaWorkflowAgent`)**:
+   - Executes multi-step workflows with topological dependency ordering (`WorkflowStep`).
+   - Coordinates reverse saga rollback (LIFO) upon intermediate step failure.
+   - Tracks forward mutations and compensating actions under ADR-004 conservative accounting.
 
 ### 2.7 High-Level Developer SDK (`recoverybench.sdk`)
 - `test_agent(scenario, agent)`: One-line test execution function for CI/CD and scripts.
